@@ -39,6 +39,8 @@ defmodule Jido.Integration.V2.Apps.TradingOps.MixProject do
       DependencyResolver.jido_integration_v2_github(),
       DependencyResolver.jido_integration_v2_codex_cli(),
       DependencyResolver.jido_integration_v2_market_data(),
+      DependencyResolver.execution_plane(),
+      DependencyResolver.pristine(override: true),
       DependencyResolver.req_llm(),
       {:credo, "~> 1.7.17", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4.7", only: [:dev, :test], runtime: false},

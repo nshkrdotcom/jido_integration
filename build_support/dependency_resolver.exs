@@ -189,6 +189,15 @@ defmodule Jido.Integration.Build.DependencyResolver do
 
   def citadel_governance(opts \\ []), do: external_dep(:citadel_governance, opts)
 
+  def crucible_provider_contracts(opts \\ []),
+    do: external_dep(:crucible_provider_contracts, opts)
+
+  def crucible_signal(opts \\ []), do: external_dep(:crucible_signal, opts)
+
+  def crucible_signal_trace(opts \\ []), do: external_dep(:crucible_signal_trace, opts)
+
+  def crucible_tap(opts \\ []), do: external_dep(:crucible_tap, opts)
+
   def jido_action(opts \\ []), do: external_dep(:jido_action, opts)
 
   def req_llm(opts \\ []), do: external_dep(:req_llm, opts)

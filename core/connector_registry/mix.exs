@@ -35,6 +35,10 @@ defmodule Jido.Integration.V2.ConnectorRegistry.MixProject do
       DependencyResolver.jido_integration_v2_codex_cli(only: :test, runtime: false),
       DependencyResolver.jido_integration_v2_github(only: :test, runtime: false),
       DependencyResolver.jido_integration_v2_linear(only: :test, runtime: false),
+      DependencyResolver.ground_plane_contracts(),
+      DependencyResolver.ground_plane_persistence_policy(),
+      DependencyResolver.execution_plane(),
+      DependencyResolver.pristine(override: true),
       {:credo, "~> 1.7.17", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40.1", only: :dev, runtime: false}
