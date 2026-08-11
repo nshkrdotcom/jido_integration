@@ -87,8 +87,6 @@ defmodule Jido.Integration.V2.Auth.Persistence do
   alias Jido.Integration.V2.Auth.Persistence.Resolution
   alias Jido.Integration.V2.Auth.Store
 
-  @test_build Mix.env() == :test
-
   @required_store_keys [:credential_store, :lease_store, :connection_store, :install_store]
   @memory_store_modules %{
     credential_store: Store,
@@ -182,11 +180,7 @@ defmodule Jido.Integration.V2.Auth.Persistence do
 
   @doc false
   @spec test_store_modules() :: map()
-  def test_store_modules do
-    if @test_build,
-      do: @memory_store_modules,
-      else: raise(ArgumentError, "auth memory stores are available only in test builds")
-  end
+  def test_store_modules, do: @memory_store_modules
 
   defp resolve_profile(attrs) do
     attrs
@@ -238,28 +232,14 @@ defmodule Jido.Integration.V2.Auth.Persistence do
 
     selected = Map.take(store_modules, @required_store_keys)
 
-    if missing == [] and test_stores_allowed?(selected) do
+    if missing == [] do
       {:ok, selected}
     else
-      reject_invalid_store_selection(missing, selected)
+      {:error, {:missing_store_modules, missing}}
     end
   end
 
   defp validate_store_modules(_store_modules), do: {:error, :invalid_store_modules}
-
-  defp reject_invalid_store_selection([], selected) do
-    if Enum.any?(Map.values(selected), &(&1 == Store)),
-      do: {:error, :test_store_forbidden},
-      else: {:error, :invalid_store_modules}
-  end
-
-  defp reject_invalid_store_selection(missing, _selected) do
-    {:error, {:missing_store_modules, missing}}
-  end
-
-  defp test_stores_allowed?(selected) do
-    @test_build or Enum.all?(Map.values(selected), &(&1 != Store))
-  end
 
   defp require_configuration(attrs) do
     if map_size(attrs) == 0 or

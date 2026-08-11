@@ -30,7 +30,6 @@ defmodule Jido.Integration.V2.ConnectorRegistry.MixProject do
     [
       DependencyResolver.jido_integration_contracts(),
       DependencyResolver.jido_integration_provider_classification(),
-      DependencyResolver.jido_integration_v2_auth(),
       DependencyResolver.jido_integration_v2_conformance(only: :test, runtime: false),
       DependencyResolver.jido_integration_v2_codex_cli(only: :test, runtime: false),
       DependencyResolver.jido_integration_v2_github(only: :test, runtime: false),

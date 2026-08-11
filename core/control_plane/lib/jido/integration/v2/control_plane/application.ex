@@ -6,18 +6,19 @@ defmodule Jido.Integration.V2.ControlPlane.Application do
   use Application
 
   alias Jido.Integration.V2.ControlPlane.Persistence
-
-  @test_build Mix.env() == :test
+  alias Jido.Integration.V2.ControlPlane.RunLedger
 
   @impl true
   def start(_type, _args) do
+    persistence = persistence_boot_attrs()
+
     children =
       [
-        {Jido.Integration.V2.ControlPlane.Persistence.Owner, persistence_boot_attrs()},
+        {Jido.Integration.V2.ControlPlane.Persistence.Owner, persistence},
         {Jido.Integration.V2.ControlPlane.RuntimeConfig, []},
         {Jido.Integration.V2.ControlPlane.Registry, []}
       ] ++
-        test_store_children() ++
+        memory_store_children(persistence) ++
         [{Jido.Integration.V2.ControlPlane.AttemptReconciler, []}]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
@@ -26,13 +27,12 @@ defmodule Jido.Integration.V2.ControlPlane.Application do
     Supervisor.start_link(children, opts)
   end
 
-  defp persistence_boot_attrs do
-    if @test_build,
-      do: [profile: :mickey_mouse, store_modules: Persistence.test_store_modules()],
-      else: Application.fetch_env!(:jido_integration_v2_control_plane, :persistence)
-  end
+  defp persistence_boot_attrs,
+    do: Application.fetch_env!(:jido_integration_v2_control_plane, :persistence)
 
-  defp test_store_children do
-    if @test_build, do: [{Jido.Integration.V2.ControlPlane.RunLedger, []}], else: []
+  defp memory_store_children(persistence) do
+    if RunLedger in Map.values(Persistence.resolve!(persistence).store_modules),
+      do: [{RunLedger, []}],
+      else: []
   end
 end

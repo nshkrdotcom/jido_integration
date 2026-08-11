@@ -16,6 +16,8 @@ defmodule Jido.Integration.V2.Auth.SecretGuard do
     Jido.Integration.Secrets.SecretHandle
   ]
 
+  alias Jido.Integration.V2.Redaction
+
   @spec validate_durable(term()) :: :ok | {:error, {:secret_material_forbidden, [term()]}}
   def validate_durable(value), do: walk(value, [])
 
@@ -62,10 +64,15 @@ defmodule Jido.Integration.V2.Auth.SecretGuard do
   defp walk(_value, _path), do: :ok
 
   defp walk_entry({key, value}, :ok, path) do
-    if sensitive_key?(key) do
-      {:halt, {:error, {:secret_material_forbidden, Enum.reverse([key | path])}}}
-    else
-      walk_child(value, [key | path])
+    cond do
+      sensitive_key?(key) and value == Redaction.redacted() ->
+        {:cont, :ok}
+
+      sensitive_key?(key) ->
+        {:halt, {:error, {:secret_material_forbidden, Enum.reverse([key | path])}}}
+
+      true ->
+        walk_child(value, [key | path])
     end
   end
 

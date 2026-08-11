@@ -4,29 +4,29 @@ defmodule Jido.Integration.V2.Auth.Application do
   use Application
 
   alias Jido.Integration.V2.Auth.Persistence
-
-  @test_build Mix.env() == :test
+  alias Jido.Integration.V2.Auth.Store
 
   @impl true
   def start(_type, _args) do
+    persistence = persistence_boot_attrs()
+
     children =
       [
-        {Jido.Integration.V2.Auth.Persistence.Owner, persistence_boot_attrs()},
+        {Jido.Integration.V2.Auth.Persistence.Owner, persistence},
         {Jido.Integration.V2.Auth.RuntimeConfig, []},
         {Task.Supervisor, name: Jido.Integration.V2.Auth.MaterializationSupervisor}
-      ] ++ test_store_children()
+      ] ++ memory_store_children(persistence)
 
     opts = [strategy: :one_for_one, name: Jido.Integration.V2.Auth.Supervisor]
     Supervisor.start_link(children, opts)
   end
 
-  defp persistence_boot_attrs do
-    if @test_build,
-      do: [profile: :mickey_mouse, store_modules: Persistence.test_store_modules()],
-      else: Application.fetch_env!(:jido_integration_v2_auth, :persistence)
-  end
+  defp persistence_boot_attrs,
+    do: Application.fetch_env!(:jido_integration_v2_auth, :persistence)
 
-  defp test_store_children do
-    if @test_build, do: [{Jido.Integration.V2.Auth.Store, []}], else: []
+  defp memory_store_children(persistence) do
+    if Store in Map.values(Persistence.resolve!(persistence).store_modules),
+      do: [{Store, []}],
+      else: []
   end
 end

@@ -26,7 +26,6 @@ defmodule Jido.Integration.V2.AsmRuntimeBridge.RuntimeControlDriver do
     SessionHandle
   }
 
-  @supported_providers [:amp, :claude, :codex, :gemini, :shell]
   @execution_surface_option_keys [
     :surface_kind,
     :transport_options,
@@ -402,13 +401,13 @@ defmodule Jido.Integration.V2.AsmRuntimeBridge.RuntimeControlDriver do
 
   defp descriptor_metadata(nil) do
     %{
-      "supported_providers" => Enum.map(@supported_providers, &Atom.to_string/1)
+      "supported_providers" => supported_provider_names()
     }
   end
 
   defp descriptor_metadata(provider) do
     %{
-      "supported_providers" => Enum.map(@supported_providers, &Atom.to_string/1),
+      "supported_providers" => supported_provider_names(),
       "asm_provider" => Atom.to_string(provider.name),
       "display_name" => provider.display_name,
       "sdk_runtime" => provider.sdk_runtime && inspect(provider.sdk_runtime),
@@ -417,6 +416,12 @@ defmodule Jido.Integration.V2.AsmRuntimeBridge.RuntimeControlDriver do
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
+  end
+
+  defp supported_provider_names do
+    Provider.supported_providers()
+    |> Enum.sort()
+    |> Enum.map(&Atom.to_string/1)
   end
 
   defp authored_boundary_metadata(session_id, opts)

@@ -1,5 +1,7 @@
 # Inference Contracts
 
+Release: `0.1.0` (2026-08-10).
+
 This package owns the phase-0 shared inference contract seam.
 
 ## Contract Set

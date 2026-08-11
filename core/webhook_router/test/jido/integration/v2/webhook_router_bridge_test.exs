@@ -26,6 +26,7 @@ defmodule Jido.Integration.V2.WebhookRouterBridgeTest do
   @control_plane_store_keys [
     :run_store,
     :attempt_store,
+    :recovery_task_store,
     :event_store,
     :artifact_store,
     :claim_check_store,
@@ -172,8 +173,17 @@ defmodule Jido.Integration.V2.WebhookRouterBridgeTest do
   defp reset_persistence! do
     ControlPlanePersistence.reset!()
     AuthPersistence.reset!()
-    ControlPlanePersistence.configure!(profile: :mickey_mouse)
-    AuthPersistence.configure!(profile: :mickey_mouse)
+
+    ControlPlanePersistence.configure!(
+      profile: :mickey_mouse,
+      store_modules: Map.new(@control_plane_store_keys, &{&1, RunLedger})
+    )
+
+    AuthPersistence.configure!(
+      profile: :mickey_mouse,
+      store_modules: Map.new(@auth_store_keys, &{&1, AuthStore})
+    )
+
     :ok
   end
 

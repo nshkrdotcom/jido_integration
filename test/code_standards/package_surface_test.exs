@@ -251,6 +251,22 @@ defmodule Jido.Integration.Workspace.PackageSurfaceTest do
            "blitz workspace isolation must unset SSLKEYLOGFILE so Req-backed tasks do not fail on read-only home mounts"
   end
 
+  test "workspace packages do not share mutable dependency or build directories" do
+    for project_path <- Blitz.MixWorkspace.project_paths(MixProject.project()),
+        project_path != "." do
+      project_root = Path.join(repo_root(), project_path)
+
+      if File.dir?(project_root) do
+        for mutable_path <- ["deps", "_build"] do
+          path = Path.join(project_root, mutable_path)
+
+          refute match?({:ok, %File.Stat{type: :symlink}}, File.lstat(path)),
+                 "#{Path.relative_to(path, repo_root())} must be operator-local, not a shared symlink"
+        end
+      end
+    end
+  end
+
   test "workspace root carries the canonical dependency source bootstrap" do
     helper_path = Path.join(repo_root(), "build_support/dependency_sources.exs")
     config_path = Path.join(repo_root(), "build_support/dependency_sources.config.exs")

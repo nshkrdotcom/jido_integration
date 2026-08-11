@@ -32,7 +32,7 @@ defmodule Jido.Integration.SecretsProvider.MixProject do
 
   defp deps do
     [
-      DependencyResolver.jido_integration_v2_auth(env: Mix.env(), runtime: false),
+      DependencyResolver.jido_integration_v2_auth(runtime: false),
       {:jason, "~> 1.4"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

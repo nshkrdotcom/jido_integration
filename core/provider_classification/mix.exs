@@ -1,16 +1,22 @@
 defmodule Jido.Integration.V2.ProviderClassification.MixProject do
   use Mix.Project
 
+  @version "0.1.0"
+  @source_url "https://github.com/nshkrdotcom/jido_integration"
+
   def project do
     [
       app: :jido_integration_provider_classification,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       consolidate_protocols: false,
       deps: deps(),
       dialyzer: dialyzer(),
       docs: docs(),
+      package: package(),
+      source_url: @source_url,
+      homepage_url: @source_url,
       name: "Jido Integration Provider Classification",
       description: "No-dependency canonical provider and adapter classification vocabulary"
     ]
@@ -41,7 +47,21 @@ defmodule Jido.Integration.V2.ProviderClassification.MixProject do
   defp docs do
     [
       main: "readme",
-      extras: ["README.md"]
+      source_ref: "v#{@version}",
+      extras: ["README.md", "CHANGELOG.md", "LICENSE"]
+    ]
+  end
+
+  defp package do
+    [
+      name: "jido_integration_provider_classification",
+      licenses: ["MIT"],
+      maintainers: ["nshkrdotcom"],
+      links: %{
+        "Changelog" => "#{@source_url}/blob/main/core/provider_classification/CHANGELOG.md",
+        "GitHub" => @source_url
+      },
+      files: ["lib", "mix.exs", "README.md", "CHANGELOG.md", "LICENSE"]
     ]
   end
 end

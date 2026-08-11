@@ -128,6 +128,9 @@ Keep documentation aligned to the permanent V2 layout:
   dependency-source manifest validity, AGENTS guidance, generated package
   contracts, and publish order.
 - Keep package boundaries explicit. If a connector uses a library directly, declare that dependency in the connector package instead of relying on transitive deps.
+- Keep every child package's `deps/`, `_build/`, and `mix.lock` independent. Never
+  commit links from a child build/dependency path into the workspace root or
+  another package; parallel workspace tasks rely on those paths being isolated.
 - Prefer adding new capabilities by adding or extending child packages, not by broadening the root project.
 - Treat `contracts` as the shared public model and keep downstream packages honest against it.
 - Treat `core/brain_ingress` as the durable brain-to-lower-gateway intake seam. Scope

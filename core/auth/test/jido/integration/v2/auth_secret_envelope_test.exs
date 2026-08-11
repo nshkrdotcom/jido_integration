@@ -4,6 +4,7 @@ defmodule Jido.Integration.V2.Auth.SecretEnvelopeTest do
   alias Jido.Integration.V2.Auth.RuntimeConfig
   alias Jido.Integration.V2.Auth.SecretEnvelope
   alias Jido.Integration.V2.Auth.SecretGuard
+  alias Jido.Integration.V2.Redaction
 
   setup do
     original_runtime_config = RuntimeConfig.current()
@@ -77,6 +78,17 @@ defmodule Jido.Integration.V2.Auth.SecretEnvelopeTest do
 
     assert {:error, {:secret_material_forbidden, [:auth_tokens]}} =
              SecretGuard.validate_durable(%{auth_tokens: "smuggled"})
+  end
+
+  test "accepts the canonical redaction marker but rejects raw sensitive values" do
+    assert :ok =
+             SecretGuard.validate_durable(%{
+               authorization: Redaction.redacted(),
+               nested: %{"access_token" => Redaction.redacted()}
+             })
+
+    assert {:error, {:secret_material_forbidden, [:nested, "access_token"]}} =
+             SecretGuard.validate_durable(%{nested: %{"access_token" => "raw-secret"}})
   end
 
   defp restore_runtime_config(config) do

@@ -471,9 +471,9 @@ must still preserve the same authority and trace scope.
 
 ## Installation
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be
-installed by adding `jido_integration_contracts` to your list of
-dependencies in `mix.exs`:
+Current release: `0.1.0` (2026-08-10).
+
+Add `jido_integration_contracts` to your dependencies in `mix.exs`:
 
 ```elixir
 def deps do
@@ -486,8 +486,8 @@ end
 ## Related Guides
 
 - [Inference Contracts](guides/inference_contracts.md)
-- [Inference Baseline](../../guides/inference_baseline.md)
-- [Architecture](../../guides/architecture.md)
-- [Runtime Model](../../guides/runtime_model.md)
-- [Connector Lifecycle](../../guides/connector_lifecycle.md)
+- [Inference Baseline](https://github.com/nshkrdotcom/jido_integration/blob/main/guides/inference_baseline.md)
+- [Architecture](https://github.com/nshkrdotcom/jido_integration/blob/main/guides/architecture.md)
+- [Runtime Model](https://github.com/nshkrdotcom/jido_integration/blob/main/guides/runtime_model.md)
+- [Connector Lifecycle](https://github.com/nshkrdotcom/jido_integration/blob/main/guides/connector_lifecycle.md)
 - [Examples](examples/README.md)
