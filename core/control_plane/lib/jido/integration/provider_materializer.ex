@@ -157,11 +157,13 @@ defmodule Jido.Integration.ProviderMaterializer do
         cleanup_parent,
         command,
         workspace_root,
-        material,
-        lease,
-        request,
-        account,
-        binding
+        %{
+          material: material,
+          lease: lease,
+          request: request,
+          account: account,
+          binding: binding
+        }
       )
     else
       {:error, _reason} = error ->
@@ -179,13 +181,9 @@ defmodule Jido.Integration.ProviderMaterializer do
          cleanup_parent,
          command,
          workspace_root,
-         material,
-         lease,
-         request,
-         account,
-         binding
+         context
        ) do
-    case install_codex_auth(config_root, material.payload) do
+    case install_codex_auth(config_root, context.material.payload) do
       {:ok, auth} ->
         runtime =
           build_codex_runtime(
@@ -193,16 +191,16 @@ defmodule Jido.Integration.ProviderMaterializer do
             workspace_root,
             config_root,
             auth,
-            lease,
-            request,
-            account,
-            binding
+            context.lease,
+            context.request,
+            context.account,
+            context.binding
           )
 
         {:ok,
          %CodexBundle{
            runtime: runtime,
-           secret_material: %{material | payload: Map.from_struct(runtime)},
+           secret_material: %{context.material | payload: Map.from_struct(runtime)},
            cleanup_root: config_root,
            cleanup_parent: cleanup_parent
          }}
@@ -364,19 +362,25 @@ defmodule Jido.Integration.ProviderMaterializer do
 
     case Keyword.get(config, :session_root_parent) do
       parent when is_binary(parent) and parent != "" ->
-        parent = Path.expand(parent)
-
-        if safe_root_parent?(parent) do
-          case File.mkdir_p(parent) do
-            :ok -> {:ok, parent}
-            {:error, reason} -> {:error, {:codex_materializer_root_unavailable, reason}}
-          end
-        else
-          {:error, :unsafe_codex_materializer_root}
-        end
+        parent |> Path.expand() |> prepare_codex_root_parent()
 
       _missing ->
         {:error, :codex_materializer_root_not_configured}
+    end
+  end
+
+  defp prepare_codex_root_parent(parent) do
+    if safe_root_parent?(parent) do
+      create_codex_root_parent(parent)
+    else
+      {:error, :unsafe_codex_materializer_root}
+    end
+  end
+
+  defp create_codex_root_parent(parent) do
+    case File.mkdir_p(parent) do
+      :ok -> {:ok, parent}
+      {:error, reason} -> {:error, {:codex_materializer_root_unavailable, reason}}
     end
   end
 

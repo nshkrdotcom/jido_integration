@@ -191,10 +191,7 @@ defmodule Jido.Integration.V2.SecretMaterial do
       payload: value(attrs, :payload)
     }
 
-    if known_fields?(attrs) and present_string?(material.materialization_ref) and
-         present_string?(material.provider_family) and present_string?(material.account_ref) and
-         is_integer(material.generation) and material.generation > 0 and is_map(material.payload) and
-         map_size(material.payload) > 0 do
+    if valid_secret_material?(attrs, material) do
       {:ok, material}
     else
       {:error, :invalid_secret_material}
@@ -227,6 +224,19 @@ defmodule Jido.Integration.V2.SecretMaterial do
   end
 
   defp value(attrs, key), do: Map.get(attrs, key, Map.get(attrs, Atom.to_string(key)))
+
+  defp valid_secret_material?(attrs, material) do
+    Enum.all?([
+      known_fields?(attrs),
+      present_string?(material.materialization_ref),
+      present_string?(material.provider_family),
+      present_string?(material.account_ref),
+      is_integer(material.generation),
+      is_integer(material.generation) and material.generation > 0,
+      is_map(material.payload),
+      is_map(material.payload) and map_size(material.payload) > 0
+    ])
+  end
 
   defp known_fields?(attrs) do
     allowed = MapSet.new(Enum.flat_map(@fields, &[&1, Atom.to_string(&1)]))

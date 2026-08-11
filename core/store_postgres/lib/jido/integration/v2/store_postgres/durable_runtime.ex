@@ -167,38 +167,60 @@ defmodule Jido.Integration.V2.StorePostgres.DurableRuntime do
   end
 
   defp validate_options!(opts) when is_list(opts) do
-    missing = Enum.reject(@required_options, &Keyword.has_key?(opts, &1))
-
-    cond do
-      missing != [] ->
-        raise ArgumentError, "missing durable runtime options: #{inspect(missing)}"
-
-      not Keyword.keyword?(Keyword.fetch!(opts, :repo_options)) ->
-        raise ArgumentError, "repo_options must be a keyword list"
-
-      Keyword.has_key?(Keyword.fetch!(opts, :repo_options), :name) and
-          Keyword.fetch!(Keyword.fetch!(opts, :repo_options), :name) != Repo ->
-        raise ArgumentError, "repo_options name must be #{inspect(Repo)}"
-
-      not is_atom(Keyword.fetch!(opts, :persistence_profile)) ->
-        raise ArgumentError, "persistence_profile must be an atom"
-
-      Keyword.get(opts, :repo_mode, :standalone) not in [:standalone, :external] ->
-        raise ArgumentError, "repo_mode must be :standalone or :external"
-
-      not valid_materializers?(Keyword.fetch!(opts, :credential_materializers)) ->
-        raise ArgumentError, "credential_materializers must be a non-empty provider map"
-
-      not valid_preflight_timeout?(Keyword.get(opts, :preflight_timeout, 30_000)) ->
-        raise ArgumentError, "preflight_timeout must be a positive integer"
-
-      true ->
-        opts
-    end
+    validate_required_options!(opts)
+    validate_repo_options!(opts)
+    validate_persistence_profile!(opts)
+    validate_repo_mode!(opts)
+    validate_materializers!(opts)
+    validate_preflight_timeout!(opts)
+    opts
   end
 
   defp validate_options!(_opts),
     do: raise(ArgumentError, "durable runtime options must be a keyword list")
+
+  defp validate_required_options!(opts) do
+    case Enum.reject(@required_options, &Keyword.has_key?(opts, &1)) do
+      [] -> :ok
+      missing -> raise ArgumentError, "missing durable runtime options: #{inspect(missing)}"
+    end
+  end
+
+  defp validate_repo_options!(opts) do
+    repo_options = Keyword.fetch!(opts, :repo_options)
+
+    unless Keyword.keyword?(repo_options) do
+      raise ArgumentError, "repo_options must be a keyword list"
+    end
+
+    if Keyword.has_key?(repo_options, :name) and Keyword.fetch!(repo_options, :name) != Repo do
+      raise ArgumentError, "repo_options name must be #{inspect(Repo)}"
+    end
+  end
+
+  defp validate_persistence_profile!(opts) do
+    unless is_atom(Keyword.fetch!(opts, :persistence_profile)) do
+      raise ArgumentError, "persistence_profile must be an atom"
+    end
+  end
+
+  defp validate_repo_mode!(opts) do
+    unless Keyword.get(opts, :repo_mode, :standalone) in [:standalone, :external] do
+      raise ArgumentError, "repo_mode must be :standalone or :external"
+    end
+  end
+
+  defp validate_materializers!(opts) do
+    unless valid_materializers?(Keyword.fetch!(opts, :credential_materializers)) do
+      raise ArgumentError, "credential_materializers must be a non-empty provider map"
+    end
+  end
+
+  defp validate_preflight_timeout!(opts) do
+    unless valid_preflight_timeout?(Keyword.get(opts, :preflight_timeout, 30_000)) do
+      raise ArgumentError, "preflight_timeout must be a positive integer"
+    end
+  end
 
   defp valid_materializers?(materializers)
        when is_map(materializers) and map_size(materializers) > 0 do
@@ -336,13 +358,16 @@ defmodule Jido.Integration.V2.StorePostgres.DurableRuntime do
 
     use GenServer
 
+    alias Jido.Integration.V2.Auth
+    alias Jido.Integration.V2.StorePostgres
+
     def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
     @impl true
     def init(opts) do
       :ok =
-        Jido.Integration.V2.Auth.configure_managed_accounts!(
-          store: Jido.Integration.V2.StorePostgres.managed_account_store(),
+        Auth.configure_managed_accounts!(
+          store: StorePostgres.managed_account_store(),
           materializers: Keyword.fetch!(opts, :credential_materializers)
         )
 

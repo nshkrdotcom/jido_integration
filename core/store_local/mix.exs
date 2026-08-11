@@ -33,9 +33,9 @@ defmodule Jido.Integration.V2.StoreLocal.MixProject do
     [
       DependencyResolver.jido_integration_contracts(),
       DependencyResolver.ground_plane_persistence_policy(),
-      DependencyResolver.jido_integration_v2_auth(),
+      DependencyResolver.jido_integration_v2_auth(runtime: false),
       DependencyResolver.jido_integration_v2_brain_ingress(),
-      DependencyResolver.jido_integration_v2_control_plane(),
+      DependencyResolver.jido_integration_v2_control_plane(runtime: false),
       {:credo, "~> 1.7.17", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.40.1", only: :dev, runtime: false}
@@ -43,7 +43,16 @@ defmodule Jido.Integration.V2.StoreLocal.MixProject do
   end
 
   defp dialyzer do
-    [plt_add_deps: :apps_direct]
+    [
+      plt_add_deps: :apps_direct,
+      # These owner packages are compile-only so a consumer can configure
+      # their persistence before starting them, but StoreLocal implements and
+      # calls their public behaviours. Keep their specs in the package PLT.
+      plt_add_apps: [
+        :jido_integration_v2_auth,
+        :jido_integration_v2_control_plane
+      ]
+    ]
   end
 
   defp docs do

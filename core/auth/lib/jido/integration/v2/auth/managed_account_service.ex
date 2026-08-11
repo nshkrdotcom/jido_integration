@@ -12,6 +12,7 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
   alias Jido.Integration.V2.Auth.RuntimeConfig
   alias Jido.Integration.V2.Auth.SecretGuard
   alias Jido.Integration.V2.Auth.ServiceCore
+  alias Jido.Integration.V2.Auth.Stores
   alias Jido.Integration.V2.Contracts
   alias Jido.Integration.V2.CredentialLease
   alias Jido.Integration.V2.ManagedAccountRef
@@ -51,16 +52,7 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
     with :ok <- SecretGuard.validate_durable(attrs),
          {:ok, store} <- store(),
          {:ok, fields} <- registration_fields(attrs) do
-      store.transact(fn ->
-        with {:ok, install_result} <- start_managed_install(fields, attrs, now),
-             {:ok, completion} <-
-               complete_managed_install(install_result.install, fields, attrs, now),
-             account <- build_account(completion.connection, fields, now),
-             version <- build_version(account, fields, nil, now),
-             :ok <- store.register(account, version) do
-          {:ok, %{account: account, account_ref: ManagedAccount.ref(account)}}
-        end
-      end)
+      register_account(store, fields, attrs, now)
     end
   end
 
@@ -127,23 +119,7 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
     with :ok <- SecretGuard.validate_durable(attrs),
          {:ok, revocation_ref} <- required_string(attrs, :revocation_ref),
          {:ok, store} <- store() do
-      store.transact(fn ->
-        with {:ok, revoked} <-
-               store.revoke(
-                 expected.account_ref,
-                 expected.generation,
-                 expected.fence,
-                 revocation_ref,
-                 now
-               ),
-             {:ok, _connection} <-
-               ServiceCore.revoke_connection(revoked.connection_id, %{
-                 now: now,
-                 reason: revocation_ref
-               }) do
-          {:ok, revoked}
-        end
-      end)
+      revoke_account(store, expected, revocation_ref, now)
     end
   end
 
@@ -152,29 +128,7 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
   def request_lease(%ManagedAccountRef{} = expected, context) when is_map(context) do
     with :ok <- SecretGuard.validate_durable(context),
          {:ok, store} <- store() do
-      store.transact(fn ->
-        with {:ok, account} <- lock_expected_account(store, expected),
-             :ok <- ensure_active(account),
-             :ok <- reject_identity_substitution(account, context) do
-          context =
-            context
-            |> Map.merge(%{
-              tenant_id: account.tenant_id,
-              authority_mode: :governed,
-              execution_context_scope: :governed,
-              provider_family: account.provider_family,
-              provider_account_ref: account.account_ref,
-              credential_handle_ref: account.credential_handle_ref,
-              endpoint_ref: account.endpoint_ref,
-              rotation_epoch: account.generation,
-              fence_token: fence_token(account),
-              managed_account_ref: ManagedAccount.ref(account),
-              materialization_only?: true
-            })
-
-          ServiceCore.request_managed_lease(account, context)
-        end
-      end)
+      request_managed_lease(store, expected, context)
     end
   end
 
@@ -324,6 +278,71 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
     })
   end
 
+  defp register_account(store, fields, attrs, now) do
+    store.transact(fn -> perform_registration(store, fields, attrs, now) end)
+  end
+
+  defp perform_registration(store, fields, attrs, now) do
+    with {:ok, install_result} <- start_managed_install(fields, attrs, now),
+         {:ok, completion} <-
+           complete_managed_install(install_result.install, fields, attrs, now),
+         account <- build_account(completion.connection, fields, now),
+         version <- build_version(account, fields, nil, now),
+         :ok <- store.register(account, version) do
+      {:ok, %{account: account, account_ref: ManagedAccount.ref(account)}}
+    end
+  end
+
+  defp revoke_account(store, expected, revocation_ref, now) do
+    store.transact(fn -> perform_revocation(store, expected, revocation_ref, now) end)
+  end
+
+  defp perform_revocation(store, expected, revocation_ref, now) do
+    with {:ok, revoked} <-
+           store.revoke(
+             expected.account_ref,
+             expected.generation,
+             expected.fence,
+             revocation_ref,
+             now
+           ),
+         {:ok, _connection} <-
+           ServiceCore.revoke_connection(revoked.connection_id, %{
+             now: now,
+             reason: revocation_ref
+           }) do
+      {:ok, revoked}
+    end
+  end
+
+  defp request_managed_lease(store, expected, context) do
+    store.transact(fn -> perform_lease_request(store, expected, context) end)
+  end
+
+  defp perform_lease_request(store, expected, context) do
+    with {:ok, account} <- lock_expected_account(store, expected),
+         :ok <- ensure_active(account),
+         :ok <- reject_identity_substitution(account, context) do
+      ServiceCore.request_managed_lease(account, managed_lease_context(account, context))
+    end
+  end
+
+  defp managed_lease_context(account, context) do
+    Map.merge(context, %{
+      tenant_id: account.tenant_id,
+      authority_mode: :governed,
+      execution_context_scope: :governed,
+      provider_family: account.provider_family,
+      provider_account_ref: account.account_ref,
+      credential_handle_ref: account.credential_handle_ref,
+      endpoint_ref: account.endpoint_ref,
+      rotation_epoch: account.generation,
+      fence_token: fence_token(account),
+      managed_account_ref: ManagedAccount.ref(account),
+      materialization_only?: true
+    })
+  end
+
   defp reject_identity_substitution(account, context) do
     expected = %{
       tenant_id: account.tenant_id,
@@ -347,6 +366,15 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
   defp ensure_materialization_alignment(lease, request, account, now) do
     metadata = lease.metadata
 
+    with :ok <- validate_lease_account_alignment(lease, request, account),
+         :ok <- validate_lease_metadata(metadata, account),
+         :ok <- validate_request_metadata(request, metadata, account),
+         :ok <- validate_effect_metadata(request, metadata) do
+      validate_materialization_window(lease, request, account, now)
+    end
+  end
+
+  defp validate_lease_account_alignment(lease, request, account) do
     cond do
       request.lease_id != lease.lease_id ->
         {:error, :materialization_lease_mismatch}
@@ -360,6 +388,13 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
       lease.connection_id != account.connection_id ->
         {:error, :materialization_connection_mismatch}
 
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_lease_metadata(metadata, account) do
+    cond do
       value(metadata, :provider_family) != account.provider_family ->
         {:error, :materialization_provider_mismatch}
 
@@ -375,6 +410,13 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
       value(metadata, :fence_token) != fence_token(account) ->
         {:error, :materialization_fence_mismatch}
 
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_request_metadata(request, metadata, account) do
+    cond do
       request.endpoint_ref != account.endpoint_ref ->
         {:error, :materialization_endpoint_mismatch}
 
@@ -384,6 +426,13 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
       request.authority_ref != value(metadata, :authority_ref) ->
         {:error, :materialization_authority_mismatch}
 
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_effect_metadata(request, metadata) do
+    cond do
       request.effect_ref != value(metadata, :effect_ref) ->
         {:error, :materialization_effect_mismatch}
 
@@ -393,6 +442,13 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
       request.target_ref != value(metadata, :target_ref) ->
         {:error, :materialization_target_mismatch}
 
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_materialization_window(lease, request, account, now) do
+    cond do
       DateTime.compare(request.issued_at, lease.issued_at) == :lt ->
         {:error, :materialization_outlives_lease}
 
@@ -436,7 +492,7 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
   end
 
   defp record_materialization(lease_id, materialization_ref, now) do
-    Jido.Integration.V2.Auth.Stores.lease_store().record_materialization(
+    Stores.lease_store().record_materialization(
       lease_id,
       materialization_ref,
       now
@@ -446,15 +502,19 @@ defmodule Jido.Integration.V2.Auth.ManagedAccountService do
   defp admit_materialization(lease, request, redemption_context, now) do
     with {:ok, store} <- store() do
       store.transact(fn ->
-        with {:ok, account} <- lock_expected_account(store, request.account),
-             :ok <- ensure_active(account),
-             :ok <- ensure_materialization_alignment(lease, request, account, now),
-             {:ok, _evidence} <- ServiceCore.redeem_lease(lease.lease_id, redemption_context),
-             {:ok, _record} <-
-               record_materialization(lease.lease_id, request.materialization_ref, now) do
-          {:ok, account}
-        end
+        perform_materialization_admission(store, lease, request, redemption_context, now)
       end)
+    end
+  end
+
+  defp perform_materialization_admission(store, lease, request, redemption_context, now) do
+    with {:ok, account} <- lock_expected_account(store, request.account),
+         :ok <- ensure_active(account),
+         :ok <- ensure_materialization_alignment(lease, request, account, now),
+         {:ok, _evidence} <- ServiceCore.redeem_lease(lease.lease_id, redemption_context),
+         {:ok, _record} <-
+           record_materialization(lease.lease_id, request.materialization_ref, now) do
+      {:ok, account}
     end
   end
 

@@ -37,6 +37,7 @@ defmodule Jido.Integration.V2.StoreLocal.Case do
     %{
       auth:
         snapshot_keys(:jido_integration_v2_auth, [
+          :persistence,
           :credential_store,
           :lease_store,
           :connection_store,
@@ -46,10 +47,13 @@ defmodule Jido.Integration.V2.StoreLocal.Case do
         ]),
       control_plane:
         snapshot_keys(:jido_integration_v2_control_plane, [
+          :persistence,
           :run_store,
           :attempt_store,
+          :recovery_task_store,
           :event_store,
           :artifact_store,
+          :claim_check_store,
           :target_store,
           :ingress_store,
           :profile_registry_store

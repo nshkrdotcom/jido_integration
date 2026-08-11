@@ -76,52 +76,64 @@ defmodule Jido.Integration.V2.ControlPlane.AttemptRecovery do
   @spec reconcile_on_start(module(), keyword()) :: {:ok, summary()} | {:error, term()}
   def reconcile_on_start(observer, opts \\ []) do
     with :ok <- validate_observer(observer) do
-      discovered =
-        Stores.attempt_store().list_recoverable_attempts()
-        |> Enum.reduce(0, fn attempt, count ->
-          case put_outcome_unknown(attempt.attempt_id, %{now: now(opts)}) do
-            {:ok, _task, :inserted} -> count + 1
-            {:ok, _task, :existing} -> count
-            {:error, :external_operation_ref_required} -> count
-            {:error, _reason} -> count
-          end
-        end)
-
-      with {:ok, due_summary} <- reconcile_due(observer, opts) do
-        {:ok, Map.put(due_summary, :discovered, discovered)}
-      end
+      reconcile_startup_attempts(observer, opts)
     end
   end
 
   @spec reconcile_due(module(), keyword()) :: {:ok, summary()} | {:error, term()}
   def reconcile_due(observer, opts \\ []) do
     with :ok <- validate_observer(observer) do
-      current_time = now(opts)
-      limit = Keyword.get(opts, :limit, @default_limit)
+      reconcile_due_tasks(observer, opts)
+    end
+  end
 
-      summary =
-        current_time
-        |> Stores.recovery_task_store().list_due(limit)
-        |> Enum.reduce(empty_summary(), fn task, summary ->
-          case reconcile_task(task.task_id, observer, opts) do
-            {:ok, %RecoveryTask{status: :resolved}} ->
-              %{summary | reconciled: summary.reconciled + 1}
+  defp reconcile_startup_attempts(observer, opts) do
+    discovered =
+      Stores.attempt_store().list_recoverable_attempts()
+      |> Enum.reduce(0, &discover_attempt(&1, &2, opts))
 
-            {:ok, %RecoveryTask{status: :quarantined}} ->
-              %{summary | operator_required: summary.operator_required + 1}
+    with {:ok, due_summary} <- reconcile_due(observer, opts) do
+      {:ok, Map.put(due_summary, :discovered, discovered)}
+    end
+  end
 
-            {:ok, %RecoveryTask{status: :pending}} ->
-              %{summary | deferred: summary.deferred + 1}
+  defp discover_attempt(attempt, count, opts) do
+    case put_outcome_unknown(attempt.attempt_id, %{now: now(opts)}) do
+      {:ok, _task, :inserted} -> count + 1
+      {:ok, _task, :existing} -> count
+      {:error, :external_operation_ref_required} -> count
+      {:error, _reason} -> count
+    end
+  end
 
-            {:error, :not_claimable} ->
-              summary
+  defp reconcile_due_tasks(observer, opts) do
+    current_time = now(opts)
+    limit = Keyword.get(opts, :limit, @default_limit)
 
-            {:error, _reason} ->
-              %{summary | deferred: summary.deferred + 1}
-          end
-        end)
+    summary =
+      current_time
+      |> Stores.recovery_task_store().list_due(limit)
+      |> Enum.reduce(empty_summary(), &reconcile_due_task(&1, &2, observer, opts))
 
-      {:ok, summary}
+    {:ok, summary}
+  end
+
+  defp reconcile_due_task(task, summary, observer, opts) do
+    case reconcile_task(task.task_id, observer, opts) do
+      {:ok, %RecoveryTask{status: :resolved}} ->
+        %{summary | reconciled: summary.reconciled + 1}
+
+      {:ok, %RecoveryTask{status: :quarantined}} ->
+        %{summary | operator_required: summary.operator_required + 1}
+
+      {:ok, %RecoveryTask{status: :pending}} ->
+        %{summary | deferred: summary.deferred + 1}
+
+      {:error, :not_claimable} ->
+        summary
+
+      {:error, _reason} ->
+        %{summary | deferred: summary.deferred + 1}
     end
   end
 
@@ -364,9 +376,8 @@ defmodule Jido.Integration.V2.ControlPlane.AttemptRecovery do
              safe_payload,
              attempt.runtime_ref_id,
              aggregator_opts(attempt)
-           ),
-         :ok <- persist_run_terminal(attempt.run_id, attempt_status, safe_payload) do
-      :ok
+           ) do
+      persist_run_terminal(attempt.run_id, attempt_status, safe_payload)
     end
   end
 

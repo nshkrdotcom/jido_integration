@@ -14,26 +14,34 @@ defmodule Jido.Integration.V2.StorePostgres.RecoveryTaskStore do
   @impl true
   def put_task(%RecoveryTask{} = task) do
     with :ok <- SecretGuard.validate_durable(task) do
-      attrs = to_record_attrs(task)
-
-      Repo.transaction(fn ->
-        {inserted_count, _rows} =
-          Repo.insert_all(
-            RecoveryTaskRecord,
-            [attrs],
-            on_conflict: :nothing,
-            conflict_target: [:task_id]
-          )
-
-        disposition = if inserted_count == 1, do: :inserted, else: :existing
-        load_existing!(task, disposition)
-      end)
-      |> case do
-        {:ok, {persisted, disposition}} -> {:ok, persisted, disposition}
-        {:error, reason} -> {:error, reason}
-      end
+      put_task_transaction(task)
     end
   end
+
+  defp put_task_transaction(task) do
+    attrs = to_record_attrs(task)
+
+    Repo.transaction(fn -> persist_new_task(task, attrs) end)
+    |> normalize_put_task()
+  end
+
+  defp persist_new_task(task, attrs) do
+    {inserted_count, _rows} =
+      Repo.insert_all(
+        RecoveryTaskRecord,
+        [attrs],
+        on_conflict: :nothing,
+        conflict_target: [:task_id]
+      )
+
+    disposition = if inserted_count == 1, do: :inserted, else: :existing
+    load_existing!(task, disposition)
+  end
+
+  defp normalize_put_task({:ok, {persisted, disposition}}),
+    do: {:ok, persisted, disposition}
+
+  defp normalize_put_task({:error, reason}), do: {:error, reason}
 
   @impl true
   def fetch_task(task_id) do

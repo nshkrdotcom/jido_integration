@@ -5,6 +5,7 @@ defmodule Jido.Integration.V2.StoreLocal.PersistencePolicyTest do
   alias Jido.Integration.V2.ControlPlane
   alias Jido.Integration.V2.StoreLocal
   alias Jido.Integration.V2.StoreLocal.CredentialStore
+  alias Jido.Integration.V2.StoreLocal.RecoveryTaskStore
   alias Jido.Integration.V2.StoreLocal.RunStore
 
   test "configures local restart safe stores through explicit persistence policy" do
@@ -17,6 +18,7 @@ defmodule Jido.Integration.V2.StoreLocal.PersistencePolicyTest do
 
     assert Auth.Stores.credential_store() == CredentialStore
     assert ControlPlane.Stores.run_store() == RunStore
+    assert ControlPlane.Stores.recovery_task_store() == RecoveryTaskStore
   end
 
   test "configures local stores when persistence owner applications are not already started", %{
@@ -32,6 +34,24 @@ defmodule Jido.Integration.V2.StoreLocal.PersistencePolicyTest do
     assert Process.whereis(Jido.Integration.V2.ControlPlane.Persistence.Owner)
     assert Auth.Stores.credential_store() == CredentialStore
     assert ControlPlane.Stores.run_store() == RunStore
+
+    assert auth_boot = Application.fetch_env!(:jido_integration_v2_auth, :persistence)
+    assert auth_boot[:profile] == :local_restart_safe
+    assert [boot_capability] = auth_boot[:capabilities]
+    assert boot_capability.tier == :local_restart_safe
+    assert auth_boot[:store_modules].credential_store == CredentialStore
+
+    assert control_plane_boot =
+             Application.fetch_env!(:jido_integration_v2_control_plane, :persistence)
+
+    assert control_plane_boot[:profile] == :local_restart_safe
+    assert control_plane_boot[:capabilities] == auth_boot[:capabilities]
+    assert control_plane_boot[:store_modules].run_store == RunStore
+    assert control_plane_boot[:store_modules].recovery_task_store == RecoveryTaskStore
+
+    refute Jido.Integration.V2.ControlPlane.RunLedger in Map.values(
+             control_plane_boot[:store_modules]
+           )
   end
 
   defp stop_application(app) when is_atom(app) do

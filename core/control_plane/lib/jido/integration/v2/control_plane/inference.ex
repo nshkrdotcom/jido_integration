@@ -1,9 +1,14 @@
 defmodule Jido.Integration.V2.ControlPlane.Inference do
   @moduledoc false
 
-  alias Jido.Integration.V2.BackendManifest
+  alias Citadel.Governance.ModelAuthority
+  alias Inference.Adapter, as: InferenceAdapter
+  alias Inference.Adapters.GeminiExManaged
+  alias Inference.Client, as: InferenceClient
+  alias Jido.Integration.ProviderMaterializer
   alias Jido.Integration.V2.Auth
   alias Jido.Integration.V2.Auth.SecretGuard
+  alias Jido.Integration.V2.BackendManifest
   alias Jido.Integration.V2.CompatibilityResult
   alias Jido.Integration.V2.ConsumerManifest
   alias Jido.Integration.V2.Contracts
@@ -11,15 +16,14 @@ defmodule Jido.Integration.V2.ControlPlane.Inference do
   alias Jido.Integration.V2.ControlPlane.Inference.CallPlan
   alias Jido.Integration.V2.ControlPlane.InferenceRecorder
   alias Jido.Integration.V2.ControlPlane.RuntimeConfig
+  alias Jido.Integration.V2.CredentialLease
   alias Jido.Integration.V2.EndpointDescriptor
   alias Jido.Integration.V2.InferenceExecutionContext
   alias Jido.Integration.V2.InferenceRequest
   alias Jido.Integration.V2.InferenceResult
   alias Jido.Integration.V2.LeaseRef
   alias Jido.Integration.V2.MaterializationRequest
-  alias Jido.Integration.V2.CredentialLease
   alias Jido.Integration.V2.SecretMaterial
-  alias Jido.Integration.ProviderMaterializer
   alias ReqLLM.Response
   alias ReqLLM.Response.Stream, as: ResponseStream
 
@@ -147,9 +151,8 @@ defmodule Jido.Integration.V2.ControlPlane.Inference do
              ])
              |> Map.new()
              |> SecretGuard.validate_durable(),
-           :ok <- request |> Map.from_struct() |> SecretGuard.validate_durable(),
-           :ok <- reject_managed_direct_options(opts) do
-        :ok
+           :ok <- request |> Map.from_struct() |> SecretGuard.validate_durable() do
+        reject_managed_direct_options(opts)
       end
     else
       :ok
@@ -586,29 +589,49 @@ defmodule Jido.Integration.V2.ControlPlane.Inference do
          {:ok, _started} <- InferenceRecorder.start_managed(record_spec) do
       case execute_route(execution_request, context, route, credential_mode, opts) do
         {:ok, execution} ->
-          with {:ok, recorded} <-
-                 InferenceRecorder.complete_managed(
-                   Map.merge(record_spec, %{
-                     stream: execution.stream,
-                     result: execution.inference_result
-                   })
-                 ) do
-            {:ok,
-             invocation_result(
-               durable_request,
-               context,
-               consumer_manifest,
-               route,
-               credential_mode,
-               execution,
-               recorded
-             )}
-          end
+          complete_managed_execution(
+            execution,
+            record_spec,
+            durable_request,
+            context,
+            consumer_manifest,
+            route,
+            credential_mode
+          )
 
         {:error, reason} = error ->
           _ = InferenceRecorder.fail_managed(record_spec, reason)
           error
       end
+    end
+  end
+
+  defp complete_managed_execution(
+         execution,
+         record_spec,
+         durable_request,
+         context,
+         consumer_manifest,
+         route,
+         credential_mode
+       ) do
+    completion_spec =
+      Map.merge(record_spec, %{
+        stream: execution.stream,
+        result: execution.inference_result
+      })
+
+    with {:ok, recorded} <- InferenceRecorder.complete_managed(completion_spec) do
+      {:ok,
+       invocation_result(
+         durable_request,
+         context,
+         consumer_manifest,
+         route,
+         credential_mode,
+         execution,
+         recorded
+       )}
     end
   end
 
@@ -1249,15 +1272,11 @@ defmodule Jido.Integration.V2.ControlPlane.Inference do
   defp credential_lease_id(%{kind: :managed, lease: %CredentialLease{} = lease}),
     do: lease.lease_id
 
-  defp validate_managed_call_plan(%CallPlan{} = call_plan) do
-    cond do
-      is_binary(call_plan.standalone_api_key) ->
-        {:error, :managed_endpoint_credential_forbidden}
+  defp validate_managed_call_plan(%CallPlan{standalone_api_key: api_key}) when is_binary(api_key),
+    do: {:error, :managed_endpoint_credential_forbidden}
 
-      true ->
-        SecretGuard.validate_durable(call_plan.headers)
-    end
-  end
+  defp validate_managed_call_plan(%CallPlan{} = call_plan),
+    do: SecretGuard.validate_durable(call_plan.headers)
 
   defp validate_managed_effect_alignment(%CallPlan{} = call_plan, context) do
     expected_model = Contracts.get(call_plan.model_spec, :id)
@@ -1290,7 +1309,7 @@ defmodule Jido.Integration.V2.ControlPlane.Inference do
     with {:ok, grant_ref} <- required_string_option(opts, :model_grant_ref),
          {:ok, binding} <- model_grant_binding(call_plan, context, credential_mode),
          %DateTime{} = now <- Keyword.get(opts, :now, DateTime.utc_now()),
-         result <- Citadel.Governance.ModelAuthority.verify_grant(grant_ref, binding, now) do
+         result <- ModelAuthority.verify_grant(grant_ref, binding, now) do
       normalize_grant_verification(result)
     end
   end
@@ -1358,20 +1377,18 @@ defmodule Jido.Integration.V2.ControlPlane.Inference do
   end
 
   defp managed_inference_client(call_plan, credential_mode, provider_refs, authority) do
-    adapter = Inference.Adapters.GeminiExManaged
+    adapter = GeminiExManaged
 
     with :ok <- validate_managed_adapter(adapter),
          {:ok, authority_projection} <-
-           managed_authority_projection(call_plan, credential_mode, provider_refs),
-         {:ok, client} <-
-           Elixir.Inference.Client.new(%{
-             adapter: adapter,
-             provider: :gemini,
-             model: Contracts.get(call_plan.model_spec, :id),
-             authority: authority_projection,
-             adapter_opts: [governed_authority: authority]
-           }) do
-      {:ok, client}
+           managed_authority_projection(call_plan, credential_mode, provider_refs) do
+      InferenceClient.new(%{
+        adapter: adapter,
+        provider: :gemini,
+        model: Contracts.get(call_plan.model_spec, :id),
+        authority: authority_projection,
+        adapter_opts: [governed_authority: authority]
+      })
     end
   end
 
@@ -1380,7 +1397,7 @@ defmodule Jido.Integration.V2.ControlPlane.Inference do
       not (is_atom(adapter) and Code.ensure_loaded?(adapter)) ->
         {:error, :managed_inference_adapter_unavailable}
 
-      Elixir.Inference.Adapter.credential_mode(adapter) != :managed_materialization ->
+      InferenceAdapter.credential_mode(adapter) != :managed_materialization ->
         {:error, :managed_inference_adapter_required}
 
       true ->

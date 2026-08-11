@@ -32,19 +32,7 @@ defmodule Jido.Integration.V2.StorePostgres.ManagedAccountStore do
   def register(%ManagedAccount{} = account, %ManagedCredentialVersion{} = version) do
     with :ok <- SecretGuard.validate_durable(account),
          :ok <- SecretGuard.validate_durable(version) do
-      Repo.transaction(fn ->
-        with {:ok, _account} <-
-               account
-               |> account_attrs()
-               |> then(&ManagedAccountRecord.changeset(%ManagedAccountRecord{}, &1))
-               |> Repo.insert(),
-             {:ok, _version} <- insert_version(version) do
-          :ok
-        else
-          {:error, changeset} -> Repo.rollback(changeset)
-        end
-      end)
-      |> normalize_transaction()
+      register_transaction(account, version)
     end
   end
 
@@ -98,49 +86,7 @@ defmodule Jido.Integration.V2.StorePostgres.ManagedAccountStore do
         now
       ) do
     with :ok <- SecretGuard.validate_durable(version) do
-      Repo.transaction(fn ->
-        account = lock_account!(account_ref)
-
-        cond do
-          account.state != :active ->
-            Repo.rollback(:managed_account_revoked)
-
-          account.generation != expected_generation ->
-            Repo.rollback(:stale_managed_account_generation)
-
-          next_fence <= account.fence ->
-            Repo.rollback(:stale_fence)
-
-          true ->
-            previous =
-              Repo.get_by!(ManagedCredentialVersionRecord,
-                account_ref: account_ref,
-                generation: expected_generation
-              )
-
-            with {:ok, _previous} <-
-                   previous
-                   |> ManagedCredentialVersionRecord.changeset(%{superseded_at: now})
-                   |> Repo.update(),
-                 {:ok, _version} <- insert_version(version),
-                 {:ok, updated} <-
-                   account
-                   |> ManagedAccountRecord.changeset(%{
-                     generation: version.generation,
-                     fence: next_fence,
-                     credential_handle_ref: version.credential_handle_ref,
-                     secret_provider_ref: version.secret_provider_ref,
-                     secret_binding_ref: version.secret_binding_ref,
-                     updated_at: now
-                   })
-                   |> Repo.update() do
-              to_account(updated)
-            else
-              {:error, changeset} -> Repo.rollback(changeset)
-            end
-        end
-      end)
-      |> normalize_transaction()
+      rotate_transaction(account_ref, expected_generation, next_fence, version, now)
     end
   end
 
@@ -148,43 +94,7 @@ defmodule Jido.Integration.V2.StorePostgres.ManagedAccountStore do
   def revoke(account_ref, expected_generation, expected_fence, revocation_ref, now)
       when is_binary(account_ref) and is_integer(expected_generation) and
              is_integer(expected_fence) and is_binary(revocation_ref) do
-    Repo.transaction(fn ->
-      account = lock_account!(account_ref)
-
-      cond do
-        account.generation != expected_generation or account.fence != expected_fence ->
-          Repo.rollback(:stale_managed_account_ref)
-
-        account.state == :revoked ->
-          to_account(account)
-
-        true ->
-          current =
-            Repo.get_by!(ManagedCredentialVersionRecord,
-              account_ref: account_ref,
-              generation: account.generation
-            )
-
-          with {:ok, _current} <-
-                 current
-                 |> ManagedCredentialVersionRecord.changeset(%{revoked_at: now})
-                 |> Repo.update(),
-               {:ok, revoked} <-
-                 account
-                 |> ManagedAccountRecord.changeset(%{
-                   state: :revoked,
-                   revoked_at: now,
-                   revocation_ref: revocation_ref,
-                   updated_at: now
-                 })
-                 |> Repo.update() do
-            to_account(revoked)
-          else
-            {:error, changeset} -> Repo.rollback(changeset)
-          end
-      end
-    end)
-    |> normalize_transaction()
+    revoke_transaction(account_ref, expected_generation, expected_fence, revocation_ref, now)
   end
 
   def reset! do
@@ -192,6 +102,132 @@ defmodule Jido.Integration.V2.StorePostgres.ManagedAccountStore do
     Repo.delete_all(ManagedCredentialVersionRecord)
     Repo.delete_all(ManagedAccountRecord)
     :ok
+  end
+
+  defp register_transaction(account, version) do
+    Repo.transaction(fn -> persist_registration(account, version) end)
+    |> normalize_transaction()
+  end
+
+  defp persist_registration(account, version) do
+    with {:ok, _account} <-
+           account
+           |> account_attrs()
+           |> then(&ManagedAccountRecord.changeset(%ManagedAccountRecord{}, &1))
+           |> Repo.insert(),
+         {:ok, _version} <- insert_version(version) do
+      :ok
+    else
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp rotate_transaction(account_ref, expected_generation, next_fence, version, now) do
+    Repo.transaction(fn ->
+      account_ref
+      |> lock_account!()
+      |> rotate_account(expected_generation, next_fence, version, now)
+    end)
+    |> normalize_transaction()
+  end
+
+  defp rotate_account(account, expected_generation, next_fence, version, now) do
+    cond do
+      account.state != :active ->
+        Repo.rollback(:managed_account_revoked)
+
+      account.generation != expected_generation ->
+        Repo.rollback(:stale_managed_account_generation)
+
+      next_fence <= account.fence ->
+        Repo.rollback(:stale_fence)
+
+      true ->
+        persist_rotation(account, expected_generation, next_fence, version, now)
+    end
+  end
+
+  defp persist_rotation(account, expected_generation, next_fence, version, now) do
+    previous =
+      Repo.get_by!(ManagedCredentialVersionRecord,
+        account_ref: account.account_ref,
+        generation: expected_generation
+      )
+
+    with {:ok, _previous} <-
+           previous
+           |> ManagedCredentialVersionRecord.changeset(%{superseded_at: now})
+           |> Repo.update(),
+         {:ok, _version} <- insert_version(version),
+         {:ok, updated} <- update_rotated_account(account, next_fence, version, now) do
+      to_account(updated)
+    else
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp update_rotated_account(account, next_fence, version, now) do
+    account
+    |> ManagedAccountRecord.changeset(%{
+      generation: version.generation,
+      fence: next_fence,
+      credential_handle_ref: version.credential_handle_ref,
+      secret_provider_ref: version.secret_provider_ref,
+      secret_binding_ref: version.secret_binding_ref,
+      updated_at: now
+    })
+    |> Repo.update()
+  end
+
+  defp revoke_transaction(account_ref, expected_generation, expected_fence, revocation_ref, now) do
+    Repo.transaction(fn ->
+      account_ref
+      |> lock_account!()
+      |> revoke_account(expected_generation, expected_fence, revocation_ref, now)
+    end)
+    |> normalize_transaction()
+  end
+
+  defp revoke_account(account, expected_generation, expected_fence, revocation_ref, now) do
+    cond do
+      account.generation != expected_generation or account.fence != expected_fence ->
+        Repo.rollback(:stale_managed_account_ref)
+
+      account.state == :revoked ->
+        to_account(account)
+
+      true ->
+        persist_revocation(account, revocation_ref, now)
+    end
+  end
+
+  defp persist_revocation(account, revocation_ref, now) do
+    current =
+      Repo.get_by!(ManagedCredentialVersionRecord,
+        account_ref: account.account_ref,
+        generation: account.generation
+      )
+
+    with {:ok, _current} <-
+           current
+           |> ManagedCredentialVersionRecord.changeset(%{revoked_at: now})
+           |> Repo.update(),
+         {:ok, revoked} <- update_revoked_account(account, revocation_ref, now) do
+      to_account(revoked)
+    else
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp update_revoked_account(account, revocation_ref, now) do
+    account
+    |> ManagedAccountRecord.changeset(%{
+      state: :revoked,
+      revoked_at: now,
+      revocation_ref: revocation_ref,
+      updated_at: now
+    })
+    |> Repo.update()
   end
 
   defp lock_account!(account_ref) do

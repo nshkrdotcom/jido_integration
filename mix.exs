@@ -40,9 +40,9 @@ defmodule Jido.Integration.Workspace.MixProject do
   defp deps do
     [
       DependencySources.dep(:blitz, __DIR__, runtime: false),
-      DependencyResolver.jido_integration_v2_conformance(),
-      DependencyResolver.jido_integration_contracts(),
-      DependencyResolver.jido_integration_connector_generator(),
+      DependencyResolver.jido_integration_v2_conformance(runtime: false),
+      DependencyResolver.jido_integration_contracts(runtime: false),
+      DependencyResolver.jido_integration_connector_generator(runtime: false),
       DependencyResolver.req_llm(runtime: false),
       DependencySources.dep(:weld, __DIR__, only: [:dev, :test], runtime: false),
       {:jason, "~> 1.4", runtime: false},

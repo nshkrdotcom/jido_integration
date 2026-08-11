@@ -79,31 +79,38 @@ defmodule Jido.Integration.V2.StorePostgres.LeaseStore do
   @impl true
   def record_redemption(id, now, max_calls) do
     Repo.transaction(fn ->
-      record = lock_lease!(id)
-
-      cond do
-        record.revoked_at != nil ->
-          Repo.rollback(:revoked_lease)
-
-        DateTime.compare(record.expires_at, now) != :gt ->
-          Repo.rollback(:expired_lease)
-
-        max_calls != :unlimited and record.redemption_count >= max_calls ->
-          Repo.rollback(:max_calls_exceeded)
-
-        true ->
-          case record
-               |> LeaseSchema.changeset(%{
-                 redemption_count: record.redemption_count + 1,
-                 last_redeemed_at: now
-               })
-               |> Repo.update() do
-            {:ok, updated} -> to_auth_record(updated)
-            {:error, changeset} -> Repo.rollback(changeset)
-          end
-      end
+      id |> lock_lease!() |> redeem_record(now, max_calls)
     end)
     |> normalize_transaction()
+  end
+
+  defp redeem_record(record, now, max_calls) do
+    cond do
+      record.revoked_at != nil ->
+        Repo.rollback(:revoked_lease)
+
+      DateTime.compare(record.expires_at, now) != :gt ->
+        Repo.rollback(:expired_lease)
+
+      max_calls != :unlimited and record.redemption_count >= max_calls ->
+        Repo.rollback(:max_calls_exceeded)
+
+      true ->
+        persist_redemption(record, now)
+    end
+  end
+
+  defp persist_redemption(record, now) do
+    record
+    |> LeaseSchema.changeset(%{
+      redemption_count: record.redemption_count + 1,
+      last_redeemed_at: now
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, updated} -> to_auth_record(updated)
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
   end
 
   @impl true

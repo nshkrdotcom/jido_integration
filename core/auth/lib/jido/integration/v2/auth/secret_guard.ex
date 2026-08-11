@@ -44,16 +44,7 @@ defmodule Jido.Integration.V2.Auth.SecretGuard do
   defp walk(%_{} = struct, path), do: walk(Map.from_struct(struct), path)
 
   defp walk(map, path) when is_map(map) do
-    Enum.reduce_while(map, :ok, fn {key, value}, :ok ->
-      if sensitive_key?(key) do
-        {:halt, {:error, {:secret_material_forbidden, Enum.reverse([key | path])}}}
-      else
-        case walk(value, [key | path]) do
-          :ok -> {:cont, :ok}
-          {:error, _reason} = error -> {:halt, error}
-        end
-      end
-    end)
+    Enum.reduce_while(map, :ok, &walk_entry(&1, &2, path))
   end
 
   defp walk(list, path) when is_list(list) do
@@ -69,6 +60,21 @@ defmodule Jido.Integration.V2.Auth.SecretGuard do
 
   defp walk(tuple, path) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> walk(path)
   defp walk(_value, _path), do: :ok
+
+  defp walk_entry({key, value}, :ok, path) do
+    if sensitive_key?(key) do
+      {:halt, {:error, {:secret_material_forbidden, Enum.reverse([key | path])}}}
+    else
+      walk_child(value, [key | path])
+    end
+  end
+
+  defp walk_child(value, path) do
+    case walk(value, path) do
+      :ok -> {:cont, :ok}
+      {:error, _reason} = error -> {:halt, error}
+    end
+  end
 
   defp sensitive_key?(key) when is_atom(key), do: sensitive_key?(Atom.to_string(key))
 

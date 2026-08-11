@@ -88,16 +88,17 @@ defmodule Jido.Integration.V2.ControlPlane.AttemptReconciler do
 
   defp reconciliation_opts(config) do
     Enum.reduce(@option_keys, [], fn key, opts ->
-      case Map.fetch(config, key) do
-        {:ok, value} ->
-          Keyword.put(opts, key, value)
-
-        :error ->
-          case Map.fetch(config, Atom.to_string(key)) do
-            {:ok, value} -> Keyword.put(opts, key, value)
-            :error -> opts
-          end
+      case reconciliation_option(config, key) do
+        {:ok, value} -> Keyword.put(opts, key, value)
+        :error -> opts
       end
     end)
+  end
+
+  defp reconciliation_option(config, key) do
+    case Map.fetch(config, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(config, Atom.to_string(key))
+    end
   end
 end

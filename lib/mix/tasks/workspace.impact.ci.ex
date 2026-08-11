@@ -9,7 +9,10 @@ defmodule Mix.Tasks.Workspace.Impact.Ci do
   @shortdoc "Run impact-aware monorepo CI through Blitz test state"
 
   @ci_stages [
-    {:deps_get, []},
+    # Generated dependency directories are deliberately absent from impact
+    # fingerprints. Always restore them before any cached stage decision can
+    # select a compile, test, analysis, or docs command.
+    {:deps_get, [], [force: true]},
     {:format, ["--check-formatted"]},
     {:compile, []},
     {:test, []},
@@ -31,6 +34,9 @@ defmodule Mix.Tasks.Workspace.Impact.Ci do
   ]
 
   def impact_policy, do: @impact_policy
+
+  @doc false
+  def ci_stages, do: @ci_stages
 
   @fingerprint_excluded_segments [".git", ".blitz", "_build", "deps", "doc"]
 
@@ -153,6 +159,9 @@ defmodule Mix.Tasks.Workspace.Impact.Ci do
 
       {task, stage_args} ->
         [{task, stage_args ++ extra_args, []}]
+
+      {task, stage_args, stage_opts} ->
+        [{task, stage_args ++ extra_args, stage_opts}]
     end)
   end
 

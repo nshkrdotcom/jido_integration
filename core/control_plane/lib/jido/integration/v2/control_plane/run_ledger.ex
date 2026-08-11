@@ -10,8 +10,8 @@ defmodule Jido.Integration.V2.ControlPlane.RunLedger do
   alias Jido.Integration.V2.ControlPlane.ClaimCheckTelemetry
   alias Jido.Integration.V2.ControlPlane.ProfileRegistryStore
   alias Jido.Integration.V2.Event
-  alias Jido.Integration.V2.Redaction
   alias Jido.Integration.V2.RecoveryTask
+  alias Jido.Integration.V2.Redaction
   alias Jido.Integration.V2.ServiceSimulationProfile
   alias Jido.Integration.V2.SimulationProfileRegistryEntry
   alias Jido.Integration.V2.TargetDescriptor
@@ -94,20 +94,7 @@ defmodule Jido.Integration.V2.ControlPlane.RunLedger do
 
   @impl Jido.Integration.V2.ControlPlane.RecoveryTaskStore
   def put_task(%RecoveryTask{} = task) do
-    Agent.get_and_update(__MODULE__, fn state ->
-      case Map.fetch(state.recovery_tasks, task.task_id) do
-        :error ->
-          entry = %{task: task, claim_ref: nil, claim_expires_at: nil}
-          {{:ok, task, :inserted}, put_in(state, [:recovery_tasks, task.task_id], entry)}
-
-        {:ok, %{task: existing}} ->
-          if same_recovery_identity?(existing, task) do
-            {{:ok, existing, :existing}, state}
-          else
-            {{:error, :recovery_task_conflict}, state}
-          end
-      end
-    end)
+    Agent.get_and_update(__MODULE__, &put_recovery_task(&1, task))
   end
 
   @impl Jido.Integration.V2.ControlPlane.EventStore
@@ -285,27 +272,10 @@ defmodule Jido.Integration.V2.ControlPlane.RunLedger do
 
   @impl Jido.Integration.V2.ControlPlane.RecoveryTaskStore
   def claim_task(task_id, claim_ref, now, claim_expires_at) do
-    Agent.get_and_update(__MODULE__, fn state ->
-      case Map.fetch(state.recovery_tasks, task_id) do
-        {:ok, entry} ->
-          if recovery_task_due?(entry, now) do
-            claimed = %{entry.task | status: :running, updated_at: now}
-
-            next_entry = %{
-              task: claimed,
-              claim_ref: claim_ref,
-              claim_expires_at: claim_expires_at
-            }
-
-            {{:ok, claimed}, put_in(state, [:recovery_tasks, task_id], next_entry)}
-          else
-            {{:error, :not_claimable}, state}
-          end
-
-        :error ->
-          {{:error, :not_claimable}, state}
-      end
-    end)
+    Agent.get_and_update(
+      __MODULE__,
+      &claim_recovery_task(&1, task_id, claim_ref, now, claim_expires_at)
+    )
   end
 
   @impl Jido.Integration.V2.ControlPlane.RecoveryTaskStore
@@ -328,6 +298,51 @@ defmodule Jido.Integration.V2.ControlPlane.RunLedger do
           {{:error, :stale_recovery_claim}, state}
       end
     end)
+  end
+
+  defp put_recovery_task(state, task) do
+    case Map.fetch(state.recovery_tasks, task.task_id) do
+      :error ->
+        entry = %{task: task, claim_ref: nil, claim_expires_at: nil}
+        {{:ok, task, :inserted}, put_in(state, [:recovery_tasks, task.task_id], entry)}
+
+      {:ok, %{task: existing}} ->
+        existing_recovery_task_result(state, existing, task)
+    end
+  end
+
+  defp existing_recovery_task_result(state, existing, task) do
+    if same_recovery_identity?(existing, task) do
+      {{:ok, existing, :existing}, state}
+    else
+      {{:error, :recovery_task_conflict}, state}
+    end
+  end
+
+  defp claim_recovery_task(state, task_id, claim_ref, now, claim_expires_at) do
+    case Map.fetch(state.recovery_tasks, task_id) do
+      {:ok, entry} ->
+        claim_recovery_entry(state, entry, task_id, claim_ref, now, claim_expires_at)
+
+      :error ->
+        {{:error, :not_claimable}, state}
+    end
+  end
+
+  defp claim_recovery_entry(state, entry, task_id, claim_ref, now, claim_expires_at) do
+    if recovery_task_due?(entry, now) do
+      claimed = %{entry.task | status: :running, updated_at: now}
+
+      next_entry = %{
+        task: claimed,
+        claim_ref: claim_ref,
+        claim_expires_at: claim_expires_at
+      }
+
+      {{:ok, claimed}, put_in(state, [:recovery_tasks, task_id], next_entry)}
+    else
+      {{:error, :not_claimable}, state}
+    end
   end
 
   def fetch_attempt!(attempt_id) do

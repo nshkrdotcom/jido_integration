@@ -9,9 +9,9 @@ defmodule Jido.Integration.V2.Auth.ServiceCore do
   alias Jido.Integration.V2.Auth.LeaseRecord
   alias Jido.Integration.V2.Auth.LeaseRedemption
   alias Jido.Integration.V2.Auth.ManagedAccount
+  alias Jido.Integration.V2.Auth.Persistence
   alias Jido.Integration.V2.Auth.RuntimeConfig
   alias Jido.Integration.V2.Auth.RuntimeContext
-  alias Jido.Integration.V2.Auth.Persistence
   alias Jido.Integration.V2.Auth.Stores
   alias Jido.Integration.V2.Contracts
   alias Jido.Integration.V2.Credential

@@ -8,6 +8,7 @@ defmodule Jido.Integration.V2.StoreLocal do
   alias Jido.Integration.V2.ControlPlane.Persistence, as: ControlPlanePersistence
   alias Jido.Integration.V2.StoreLocal.ArtifactStore
   alias Jido.Integration.V2.StoreLocal.AttemptStore
+  alias Jido.Integration.V2.StoreLocal.ClaimCheckStore
   alias Jido.Integration.V2.StoreLocal.ConnectionStore
   alias Jido.Integration.V2.StoreLocal.CredentialStore
   alias Jido.Integration.V2.StoreLocal.EventStore
@@ -15,6 +16,7 @@ defmodule Jido.Integration.V2.StoreLocal do
   alias Jido.Integration.V2.StoreLocal.InstallStore
   alias Jido.Integration.V2.StoreLocal.LeaseStore
   alias Jido.Integration.V2.StoreLocal.ProfileRegistryStore
+  alias Jido.Integration.V2.StoreLocal.RecoveryTaskStore
   alias Jido.Integration.V2.StoreLocal.RunStore
   alias Jido.Integration.V2.StoreLocal.Server
   alias Jido.Integration.V2.StoreLocal.TargetStore
@@ -37,6 +39,31 @@ defmodule Jido.Integration.V2.StoreLocal do
 
     auth_store_modules = auth_store_modules()
     control_plane_store_modules = control_plane_store_modules()
+
+    auth_persistence = [
+      profile: profile,
+      capabilities: [capability],
+      store_modules: auth_store_modules
+    ]
+
+    control_plane_persistence = [
+      profile: profile,
+      capabilities: [capability],
+      store_modules: control_plane_store_modules
+    ]
+
+    # Auth and ControlPlane require their persistence owner configuration while
+    # their OTP applications boot. Materialize the same explicit policy that we
+    # subsequently apply through the live owner API before starting either app.
+    # This keeps cold consumer boots and already-running reconfiguration on one
+    # contract instead of relying on the dependency's compile environment.
+    Application.put_env(:jido_integration_v2_auth, :persistence, auth_persistence)
+
+    Application.put_env(
+      :jido_integration_v2_control_plane,
+      :persistence,
+      control_plane_persistence
+    )
 
     Application.put_env(
       :jido_integration_v2_auth,
@@ -72,6 +99,12 @@ defmodule Jido.Integration.V2.StoreLocal do
 
     Application.put_env(
       :jido_integration_v2_control_plane,
+      :recovery_task_store,
+      control_plane_store_modules.recovery_task_store
+    )
+
+    Application.put_env(
+      :jido_integration_v2_control_plane,
       :event_store,
       control_plane_store_modules.event_store
     )
@@ -80,6 +113,12 @@ defmodule Jido.Integration.V2.StoreLocal do
       :jido_integration_v2_control_plane,
       :artifact_store,
       control_plane_store_modules.artifact_store
+    )
+
+    Application.put_env(
+      :jido_integration_v2_control_plane,
+      :claim_check_store,
+      control_plane_store_modules.claim_check_store
     )
 
     Application.put_env(
@@ -109,19 +148,8 @@ defmodule Jido.Integration.V2.StoreLocal do
     :ok = ensure_started!(:jido_integration_v2_auth)
     :ok = ensure_started!(:jido_integration_v2_control_plane)
 
-    :ok =
-      AuthPersistence.configure!(
-        profile: profile,
-        capabilities: [capability],
-        store_modules: auth_store_modules
-      )
-
-    :ok =
-      ControlPlanePersistence.configure!(
-        profile: profile,
-        capabilities: [capability],
-        store_modules: control_plane_store_modules
-      )
+    :ok = AuthPersistence.configure!(auth_persistence)
+    :ok = ControlPlanePersistence.configure!(control_plane_persistence)
 
     :ok
   end
@@ -184,9 +212,10 @@ defmodule Jido.Integration.V2.StoreLocal do
     %{
       run_store: RunStore,
       attempt_store: AttemptStore,
+      recovery_task_store: RecoveryTaskStore,
       event_store: EventStore,
       artifact_store: ArtifactStore,
-      claim_check_store: Jido.Integration.V2.ControlPlane.RunLedger,
+      claim_check_store: ClaimCheckStore,
       target_store: TargetStore,
       ingress_store: IngressStore,
       profile_registry_store: ProfileRegistryStore

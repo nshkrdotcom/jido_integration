@@ -6,9 +6,13 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
   well as the stable invocation boundary that powers the public facade.
   """
 
+  alias ASM.ManagedSession
+
+  alias Jido.Integration.ProviderMaterializer
   alias Jido.Integration.V2.ArtifactRef
   alias Jido.Integration.V2.Attempt
   alias Jido.Integration.V2.Auth
+  alias Jido.Integration.V2.Auth.ManagedAccount
   alias Jido.Integration.V2.Capability
   alias Jido.Integration.V2.Contracts
   alias Jido.Integration.V2.ControlPlane.GovernedLowerAdmission
@@ -39,9 +43,6 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
   alias Jido.Integration.V2.TargetDescriptor
   alias Jido.Integration.V2.TriggerCheckpoint
   alias Jido.Integration.V2.TriggerRecord
-  alias Jido.Integration.ProviderMaterializer
-
-  alias ASM.ManagedSession
 
   @type invoke_preflight_error ::
           :unknown_capability
@@ -177,18 +178,14 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
       run = build_run(capability, input, auth_binding.credential_ref, opts)
       :ok = Stores.run_store().put_run(run)
 
-      continue_managed_invoke(
-        capability,
-        run,
-        input,
-        opts,
-        auth_binding,
-        account,
-        lease,
-        request,
-        redemption_context,
-        binding
-      )
+      continue_managed_invoke(capability, run, input, opts, %{
+        auth_binding: auth_binding,
+        account: account,
+        lease: lease,
+        request: request,
+        redemption_context: redemption_context,
+        binding: binding
+      })
     end
   end
 
@@ -447,18 +444,7 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
     end
   end
 
-  defp continue_managed_invoke(
-         capability,
-         run,
-         input,
-         opts,
-         auth_binding,
-         account,
-         lease,
-         request,
-         redemption_context,
-         binding
-       ) do
+  defp continue_managed_invoke(capability, run, input, opts, managed) do
     opts = default_cost_budget_opts(run, opts)
 
     with :ok <- validate_target_selection(run, capability),
@@ -468,23 +454,21 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
          %PolicyDecision{status: :allowed} = policy_decision <-
            PolicyService.evaluate(
              capability,
-             auth_binding.credential,
-             auth_binding.credential_ref,
+             managed.auth_binding.credential,
+             managed.auth_binding.credential_ref,
              input,
              opts
            ) do
       materialize_and_execute_managed_session(
-        capability,
-        run,
-        input,
-        opts,
-        policy_decision,
-        auth_binding.credential_ref,
-        account,
-        lease,
-        request,
-        redemption_context,
-        binding
+        %{
+          capability: capability,
+          run: run,
+          input: input,
+          opts: opts,
+          policy_decision: policy_decision,
+          credential_ref: managed.auth_binding.credential_ref
+        },
+        managed
       )
     else
       {:error, reason} ->
@@ -495,59 +479,47 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
     end
   end
 
-  defp materialize_and_execute_managed_session(
-         capability,
-         run,
-         input,
-         opts,
-         policy_decision,
-         credential_ref,
-         account,
-         lease,
-         request,
-         redemption_context,
-         binding
-       ) do
+  defp materialize_and_execute_managed_session(execution, managed) do
     result =
       Auth.with_materialized_credential(
-        lease,
-        request,
-        redemption_context,
+        managed.lease,
+        managed.request,
+        managed.redemption_context,
         fn %SecretMaterial{} = material ->
           with {:ok, bundle} <-
                  ProviderMaterializer.materialize_codex(
                    material,
-                   lease,
-                   request,
-                   account,
-                   binding
+                   managed.lease,
+                   managed.request,
+                   managed.account,
+                   managed.binding
                  ) do
             managed_session =
               managed_session!(
-                account,
-                request,
-                binding,
-                Keyword.get(opts, :managed_session_generation, 1)
+                managed.account,
+                managed.request,
+                managed.binding,
+                Keyword.get(execution.opts, :managed_session_generation, 1)
               )
 
             managed_runtime_opts =
               managed_runtime_opts(
-                account,
-                lease,
-                request,
-                binding,
+                managed.account,
+                managed.lease,
+                managed.request,
+                managed.binding,
                 managed_session,
                 bundle.secret_material
               )
 
             execute_admitted_managed_run(
-              capability,
-              run,
-              input,
-              Keyword.put(opts, :managed_runtime_opts, managed_runtime_opts),
-              policy_decision,
-              lease,
-              credential_ref,
+              execution.capability,
+              execution.run,
+              execution.input,
+              Keyword.put(execution.opts, :managed_runtime_opts, managed_runtime_opts),
+              execution.policy_decision,
+              managed.lease,
+              execution.credential_ref,
               bundle
             )
           end
@@ -559,13 +531,13 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
         nested_result
 
       {:ok, {:error, reason}} ->
-        fail_before_attempt(run, reason)
+        fail_before_attempt(execution.run, reason)
 
       {:ok, nested_result} ->
         nested_result
 
       {:error, reason} ->
-        fail_before_attempt(run, reason)
+        fail_before_attempt(execution.run, reason)
     end
   end
 
@@ -1369,7 +1341,7 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
       lease.tenant_id != account.tenant_id ->
         {:error, :managed_codex_lease_tenant_mismatch}
 
-      request.account != Jido.Integration.V2.Auth.ManagedAccount.ref(account) ->
+      request.account != ManagedAccount.ref(account) ->
         {:error, :stale_managed_account_ref}
 
       request.lease_id != lease.lease_id ->
@@ -1517,10 +1489,7 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
       {:ok, module} when is_atom(module) ->
         callbacks = [start: 2, subscribe: 3, send_input: 3, end_input: 2, status: 2, cancel: 2]
 
-        if Code.ensure_loaded?(module) and
-             Enum.all?(callbacks, fn {name, arity} ->
-               function_exported?(module, name, arity)
-             end) do
+        if valid_runtime_client?(module, callbacks) do
           {:ok, module}
         else
           {:error, {:invalid_managed_session_option, :runtime_client}}
@@ -1532,6 +1501,11 @@ defmodule Jido.Integration.V2.ControlPlane.ServiceCore do
       :error ->
         {:error, {:managed_session_option_required, :runtime_client}}
     end
+  end
+
+  defp valid_runtime_client?(module, callbacks) do
+    Code.ensure_loaded?(module) and
+      Enum.all?(callbacks, fn {name, arity} -> function_exported?(module, name, arity) end)
   end
 
   defp runtime_client_opts(opts) do

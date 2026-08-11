@@ -84,32 +84,46 @@ defmodule Jido.Integration.V2.ControlPlane.ReviewedToolEffect do
     authority = evidence.authority
     workspace = evidence.workspace
 
-    grant.grant_ref == map_value(binding, :authority_ref) and
-      grant.grant_ref == map_value(authority, :grant_ref) and
-      grant.decision_ref == map_value(binding, :authority_decision_ref) and
-      grant.decision_ref == map_value(authority, :decision_ref) and
-      grant.policy_artifact_ref == map_value(binding, :operation_policy_ref) and
-      grant.tenant_ref == map_value(binding, :tenant_ref) and
-      grant.effect_ref == map_value(binding, :effect_ref) and
-      grant.effect_ref == map_value(authority, :effect_ref) and
-      grant.operation_ref == map_value(binding, :operation_ref) and
-      grant.capability_id == map_value(binding, :capability_id) and
-      scope["provider_family"] == "codex" and
-      scope["provider_account_ref"] == map_value(binding, :provider_account_ref) and
-      scope["credential_lease_ref"] == map_value(binding, :credential_lease_ref) and
-      scope["credential_generation"] == map_value(binding, :credential_generation) and
-      scope["managed_session_ref"] == map_value(binding, :managed_session_ref) and
-      scope["session_generation"] == map_value(binding, :session_generation) and
-      scope["review_ref"] == map_value(authority, :review_ref) and
-      scope["workspace_policy"] == "isolated_disposable_workspace" and
-      scope["workspace_ref"] == map_value(binding, :workspace_ref) and
-      scope["workspace_ref"] == map_value(workspace, :workspace_ref) and
-      scope["workspace_root_digest"] == workspace_digest(map_value(binding, :workspace_root)) and
-      scope["relative_path"] == map_value(workspace, :relative_path) and
-      scope["operation_class"] == "create_or_replace" and
-      scope["reviewed_content_digest"] == map_value(workspace, :content_digest) and
-      scope["target_ref"] == map_value(binding, :target_ref) and
+    grant
+    |> runtime_binding_checks(authority, binding)
+    |> Kernel.++(scope_binding_checks(scope, authority, workspace, binding))
+    |> Enum.all?()
+  end
+
+  defp runtime_binding_checks(grant, authority, binding) do
+    [
+      grant.grant_ref == map_value(binding, :authority_ref),
+      grant.grant_ref == map_value(authority, :grant_ref),
+      grant.decision_ref == map_value(binding, :authority_decision_ref),
+      grant.decision_ref == map_value(authority, :decision_ref),
+      grant.policy_artifact_ref == map_value(binding, :operation_policy_ref),
+      grant.tenant_ref == map_value(binding, :tenant_ref),
+      grant.effect_ref == map_value(binding, :effect_ref),
+      grant.effect_ref == map_value(authority, :effect_ref),
+      grant.operation_ref == map_value(binding, :operation_ref),
+      grant.capability_id == map_value(binding, :capability_id)
+    ]
+  end
+
+  defp scope_binding_checks(scope, authority, workspace, binding) do
+    [
+      scope["provider_family"] == "codex",
+      scope["provider_account_ref"] == map_value(binding, :provider_account_ref),
+      scope["credential_lease_ref"] == map_value(binding, :credential_lease_ref),
+      scope["credential_generation"] == map_value(binding, :credential_generation),
+      scope["managed_session_ref"] == map_value(binding, :managed_session_ref),
+      scope["session_generation"] == map_value(binding, :session_generation),
+      scope["review_ref"] == map_value(authority, :review_ref),
+      scope["workspace_policy"] == "isolated_disposable_workspace",
+      scope["workspace_ref"] == map_value(binding, :workspace_ref),
+      scope["workspace_ref"] == map_value(workspace, :workspace_ref),
+      scope["workspace_root_digest"] == workspace_digest(map_value(binding, :workspace_root)),
+      scope["relative_path"] == map_value(workspace, :relative_path),
+      scope["operation_class"] == "create_or_replace",
+      scope["reviewed_content_digest"] == map_value(workspace, :content_digest),
+      scope["target_ref"] == map_value(binding, :target_ref),
       scope["attempt_ref"] == map_value(binding, :attempt_ref)
+    ]
   end
 
   defp reviewed_content_matches?(workspace) do

@@ -49,7 +49,6 @@ defmodule Jido.Integration.V2.Connectors.Notion.MixProject do
       WorkspaceDependencyResolver.ground_plane_contracts(),
       WorkspaceDependencyResolver.ground_plane_persistence_policy(),
       WorkspaceDependencyResolver.execution_plane(),
-      WorkspaceDependencyResolver.pristine(override: true),
       {:zoi, "~> 0.17"},
       ConnectorDependencyResolver.notion_sdk(),
       {:jason, "~> 1.4"},

@@ -65,27 +65,30 @@ defmodule Jido.Integration.V2.Auth.Store do
 
   @impl Jido.Integration.V2.Auth.LeaseStore
   def record_redemption(id, now, max_calls) do
-    Agent.get_and_update(__MODULE__, fn state ->
-      case get_in(state, [:leases, id]) do
-        %LeaseRecord{} = lease ->
-          case redemption_status(lease, now, max_calls) do
-            :ok ->
-              updated = %LeaseRecord{
-                lease
-                | redemption_count: lease.redemption_count + 1,
-                  last_redeemed_at: now
-              }
+    Agent.get_and_update(__MODULE__, &redeem_lease(&1, id, now, max_calls))
+  end
 
-              {{:ok, updated}, put_in(state, [:leases, id], updated)}
+  defp redeem_lease(state, id, now, max_calls) do
+    case get_in(state, [:leases, id]) do
+      %LeaseRecord{} = lease -> update_redeemed_lease(state, id, lease, now, max_calls)
+      nil -> {{:error, :unknown_lease}, state}
+    end
+  end
 
-            {:error, reason} ->
-              {{:error, reason}, state}
-          end
+  defp update_redeemed_lease(state, id, %LeaseRecord{} = lease, now, max_calls) do
+    case redemption_status(lease, now, max_calls) do
+      :ok ->
+        updated = %LeaseRecord{
+          lease
+          | redemption_count: lease.redemption_count + 1,
+            last_redeemed_at: now
+        }
 
-        nil ->
-          {{:error, :unknown_lease}, state}
-      end
-    end)
+        {{:ok, updated}, put_in(state, [:leases, id], updated)}
+
+      {:error, reason} ->
+        {{:error, reason}, state}
+    end
   end
 
   @impl Jido.Integration.V2.Auth.LeaseStore

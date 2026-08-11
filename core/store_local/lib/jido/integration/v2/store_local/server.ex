@@ -107,7 +107,7 @@ defmodule Jido.Integration.V2.StoreLocal.Server do
   defp decode_state(binary, path) do
     case :erlang.binary_to_term(binary, [:safe]) do
       %State{} = state ->
-        {state, false}
+        State.upgrade(state)
 
       unexpected ->
         recover_state(path, {:unexpected_state, unexpected})

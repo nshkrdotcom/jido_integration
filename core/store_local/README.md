@@ -6,8 +6,8 @@ Restart-safe local durability package for `auth` and `control_plane`.
 
 - explicit local adapters for:
   - credential, connection, install, and lease truth from `core/auth`
-  - run, attempt, event, artifact, ingress, and target truth from
-    `core/control_plane`
+  - run, attempt, recovery-task, event, artifact, claim-check, ingress, and
+    target truth from `core/control_plane`
 - a package-owned local storage server that persists one restart-safe state
   file
 - package-local contract tests and restart-recovery tests
@@ -49,8 +49,10 @@ config :jido_integration_v2_auth,
 config :jido_integration_v2_control_plane,
   run_store: Jido.Integration.V2.StoreLocal.RunStore,
   attempt_store: Jido.Integration.V2.StoreLocal.AttemptStore,
+  recovery_task_store: Jido.Integration.V2.StoreLocal.RecoveryTaskStore,
   event_store: Jido.Integration.V2.StoreLocal.EventStore,
   artifact_store: Jido.Integration.V2.StoreLocal.ArtifactStore,
+  claim_check_store: Jido.Integration.V2.StoreLocal.ClaimCheckStore,
   ingress_store: Jido.Integration.V2.StoreLocal.IngressStore,
   target_store: Jido.Integration.V2.StoreLocal.TargetStore
 ```
@@ -59,6 +61,11 @@ For tests and scripts, `Jido.Integration.V2.StoreLocal.configure_defaults!/1`
 can set the same application env values programmatically. It now also registers
 the package's GroundPlane `:local_restart_safe` capability and configures auth
 and control-plane stores through policy-backed selectors.
+
+`configure_defaults!/1` is a complete cold-start boundary: it materializes the
+same explicit persistence policy into both owner applications before starting
+them, then applies that policy through the running owners. Consumers do not
+need an ambient Mix environment or a separate application-config prelude.
 
 ## What It Pairs With
 
@@ -83,6 +90,8 @@ Compared with the owner-package in-memory defaults:
 - ingress dedupe, checkpoint, transaction, and rollback semantics stay
   explicit
 - run, attempt, and event truth stay redacted at persistence time
+- attempt-recovery tasks, claim leases, and claim-check blob/reference truth
+  survive local store restarts
 - credential truth stays behind `auth` and is persisted with
   `Auth.SecretEnvelope` encryption rather than plain text
 - lease rows persist bounded metadata only; lease payload is reconstructed from

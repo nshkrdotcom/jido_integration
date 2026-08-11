@@ -12,6 +12,7 @@ defmodule Jido.Integration.V2.StoreLocal.State do
   alias Jido.Integration.V2.Contracts
   alias Jido.Integration.V2.Credential
   alias Jido.Integration.V2.Event
+  alias Jido.Integration.V2.RecoveryTask
   alias Jido.Integration.V2.Redaction
   alias Jido.Integration.V2.Run
   alias Jido.Integration.V2.ServiceSimulationProfile
@@ -50,8 +51,11 @@ defmodule Jido.Integration.V2.StoreLocal.State do
             leases: %{},
             runs: %{},
             attempts: %{},
+            recovery_tasks: %{},
             events: %{},
             artifacts: %{},
+            claim_check_blobs: %{},
+            claim_check_references: %{},
             targets: %{},
             triggers: %{},
             checkpoints: %{},
@@ -69,8 +73,19 @@ defmodule Jido.Integration.V2.StoreLocal.State do
           leases: %{optional(String.t()) => LeaseRecord.t()},
           runs: %{optional(String.t()) => Run.t()},
           attempts: %{optional(String.t()) => Attempt.t()},
+          recovery_tasks: %{
+            optional(String.t()) => %{
+              task: RecoveryTask.t(),
+              claim_ref: String.t() | nil,
+              claim_expires_at: DateTime.t() | nil
+            }
+          },
           events: %{optional(String.t()) => [event_entry()]},
           artifacts: %{optional(String.t()) => ArtifactRef.t()},
+          claim_check_blobs: %{optional({String.t(), String.t()}) => map()},
+          claim_check_references: %{
+            optional({String.t(), String.t()}) => %{optional(tuple()) => map()}
+          },
           targets: %{optional(String.t()) => TargetDescriptor.t()},
           triggers: %{
             optional({String.t(), String.t(), String.t(), String.t()}) => TriggerRecord.t()
@@ -108,6 +123,17 @@ defmodule Jido.Integration.V2.StoreLocal.State do
     %__MODULE__{}
   end
 
+  @spec upgrade(t()) :: {t(), boolean()}
+  def upgrade(%__MODULE__{} = state) do
+    defaults = Map.from_struct(new())
+
+    upgraded =
+      __MODULE__
+      |> struct(Map.merge(defaults, Map.take(Map.from_struct(state), Map.keys(defaults))))
+
+    {upgraded, upgraded != state}
+  end
+
   @spec reset_credentials(t()) :: {:ok, t()}
   def reset_credentials(%__MODULE__{} = state), do: {:ok, %{state | credentials: %{}}}
 
@@ -128,11 +154,19 @@ defmodule Jido.Integration.V2.StoreLocal.State do
   @spec reset_attempts(t()) :: {:ok, t()}
   def reset_attempts(%__MODULE__{} = state), do: {:ok, %{state | attempts: %{}}}
 
+  @spec reset_recovery_tasks(t()) :: {:ok, t()}
+  def reset_recovery_tasks(%__MODULE__{} = state), do: {:ok, %{state | recovery_tasks: %{}}}
+
   @spec reset_events(t()) :: {:ok, t()}
   def reset_events(%__MODULE__{} = state), do: {:ok, %{state | events: %{}}}
 
   @spec reset_artifacts(t()) :: {:ok, t()}
   def reset_artifacts(%__MODULE__{} = state), do: {:ok, %{state | artifacts: %{}}}
+
+  @spec reset_claim_checks(t()) :: {:ok, t()}
+  def reset_claim_checks(%__MODULE__{} = state) do
+    {:ok, %{state | claim_check_blobs: %{}, claim_check_references: %{}}}
+  end
 
   @spec reset_targets(t()) :: {:ok, t()}
   def reset_targets(%__MODULE__{} = state), do: {:ok, %{state | targets: %{}}}
@@ -327,7 +361,12 @@ defmodule Jido.Integration.V2.StoreLocal.State do
     if Map.has_key?(state.runs, run.run_id) do
       {{:error, :duplicate_run}, state}
     else
-      {:ok, %{state | runs: Map.put(state.runs, run.run_id, sanitize_run(run))}}
+      next_state = %{state | runs: Map.put(state.runs, run.run_id, sanitize_run(run))}
+
+      case register_run_claim_check_references(next_state, run) do
+        {:ok, referenced_state} -> {:ok, referenced_state}
+        {{:error, reason}, _intermediate_state} -> {{:error, reason}, state}
+      end
     end
   end
 
@@ -370,8 +409,15 @@ defmodule Jido.Integration.V2.StoreLocal.State do
     if Map.has_key?(state.attempts, attempt.attempt_id) do
       {{:error, :duplicate_attempt}, state}
     else
-      {:ok,
-       %{state | attempts: Map.put(state.attempts, attempt.attempt_id, sanitize_attempt(attempt))}}
+      next_state = %{
+        state
+        | attempts: Map.put(state.attempts, attempt.attempt_id, sanitize_attempt(attempt))
+      }
+
+      case register_attempt_claim_check_reference(next_state, attempt) do
+        {:ok, referenced_state} -> {:ok, referenced_state}
+        {{:error, reason}, _intermediate_state} -> {{:error, reason}, state}
+      end
     end
   end
 
@@ -389,6 +435,14 @@ defmodule Jido.Integration.V2.StoreLocal.State do
     |> Map.values()
     |> Enum.filter(&(&1.run_id == run_id))
     |> Enum.sort_by(&{&1.attempt, &1.attempt_id})
+  end
+
+  @spec list_recoverable_attempts(t()) :: [Attempt.t()]
+  def list_recoverable_attempts(%__MODULE__{} = state) do
+    state.attempts
+    |> Map.values()
+    |> Enum.filter(&(&1.status in [:accepted, :running] and is_binary(&1.runtime_ref_id)))
+    |> Enum.sort_by(&{&1.inserted_at, &1.attempt_id})
   end
 
   @spec update_attempt(t(), String.t(), atom(), map() | nil, String.t() | nil, keyword()) ::
@@ -417,6 +471,250 @@ defmodule Jido.Integration.V2.StoreLocal.State do
           {:ok, %{state | attempts: Map.put(state.attempts, attempt_id, next_attempt)}}
         end
     end
+  end
+
+  @spec put_recovery_task(t(), RecoveryTask.t()) ::
+          {{:ok, RecoveryTask.t(), :inserted | :existing} | {:error, term()}, t()}
+  def put_recovery_task(%__MODULE__{} = state, %RecoveryTask{} = task) do
+    case Map.fetch(state.recovery_tasks, task.task_id) do
+      :error ->
+        entry = %{task: task, claim_ref: nil, claim_expires_at: nil}
+        recovery_tasks = Map.put(state.recovery_tasks, task.task_id, entry)
+        {{:ok, task, :inserted}, %{state | recovery_tasks: recovery_tasks}}
+
+      {:ok, %{task: existing}} ->
+        if same_recovery_identity?(existing, task) do
+          {{:ok, existing, :existing}, state}
+        else
+          {{:error, :recovery_task_conflict}, state}
+        end
+    end
+  end
+
+  @spec fetch_recovery_task(t(), String.t()) :: {:ok, RecoveryTask.t()} | :error
+  def fetch_recovery_task(%__MODULE__{} = state, task_id) do
+    case Map.fetch(state.recovery_tasks, task_id) do
+      {:ok, %{task: task}} -> {:ok, task}
+      :error -> :error
+    end
+  end
+
+  @spec list_recovery_tasks(t(), map()) :: [RecoveryTask.t()]
+  def list_recovery_tasks(%__MODULE__{} = state, filters) do
+    state.recovery_tasks
+    |> Map.values()
+    |> Enum.map(& &1.task)
+    |> Enum.filter(&recovery_task_matches?(&1, filters))
+    |> Enum.sort_by(&{&1.due_at, &1.task_id})
+  end
+
+  @spec list_due_recovery_tasks(t(), DateTime.t(), pos_integer()) :: [RecoveryTask.t()]
+  def list_due_recovery_tasks(%__MODULE__{} = state, now, limit) do
+    state.recovery_tasks
+    |> Map.values()
+    |> Enum.filter(&recovery_task_due?(&1, now))
+    |> Enum.map(& &1.task)
+    |> Enum.sort_by(&{&1.due_at, &1.task_id})
+    |> Enum.take(limit)
+  end
+
+  @spec claim_recovery_task(t(), String.t(), String.t(), DateTime.t(), DateTime.t()) ::
+          {{:ok, RecoveryTask.t()} | {:error, :not_claimable}, t()}
+  def claim_recovery_task(%__MODULE__{} = state, task_id, claim_ref, now, claim_expires_at) do
+    case Map.fetch(state.recovery_tasks, task_id) do
+      {:ok, entry} ->
+        if recovery_task_due?(entry, now) do
+          claimed = %{entry.task | status: :running, updated_at: now}
+
+          next_entry = %{
+            task: claimed,
+            claim_ref: claim_ref,
+            claim_expires_at: claim_expires_at
+          }
+
+          recovery_tasks = Map.put(state.recovery_tasks, task_id, next_entry)
+          {{:ok, claimed}, %{state | recovery_tasks: recovery_tasks}}
+        else
+          {{:error, :not_claimable}, state}
+        end
+
+      :error ->
+        {{:error, :not_claimable}, state}
+    end
+  end
+
+  @spec transition_recovery_task(
+          t(),
+          String.t(),
+          String.t(),
+          atom(),
+          DateTime.t(),
+          map(),
+          DateTime.t()
+        ) :: {{:ok, RecoveryTask.t()} | {:error, :stale_recovery_claim}, t()}
+  def transition_recovery_task(
+        %__MODULE__{} = state,
+        task_id,
+        claim_ref,
+        status,
+        due_at,
+        metadata,
+        now
+      ) do
+    case Map.fetch(state.recovery_tasks, task_id) do
+      {:ok, %{task: %{status: :running} = task, claim_ref: ^claim_ref} = entry} ->
+        updated = %{
+          task
+          | status: status,
+            due_at: due_at,
+            metadata: metadata,
+            updated_at: now
+        }
+
+        next_entry = %{entry | task: updated, claim_ref: nil, claim_expires_at: nil}
+        recovery_tasks = Map.put(state.recovery_tasks, task_id, next_entry)
+        {{:ok, updated}, %{state | recovery_tasks: recovery_tasks}}
+
+      _missing_or_stale ->
+        {{:error, :stale_recovery_claim}, state}
+    end
+  end
+
+  @spec stage_claim_check_blob(t(), map(), binary(), map()) :: {:ok, t()}
+  def stage_claim_check_blob(%__MODULE__{} = state, payload_ref, encoded, metadata) do
+    blob_key = claim_check_blob_key(payload_ref)
+    now = Contracts.now()
+
+    blob =
+      state.claim_check_blobs
+      |> Map.get(blob_key, %{
+        payload_ref: payload_ref,
+        encoded: encoded,
+        metadata: metadata,
+        status: :staged,
+        staged_at: now,
+        referenced_at: nil,
+        deleted_at: nil
+      })
+      |> Map.merge(%{
+        payload_ref: payload_ref,
+        encoded: encoded,
+        metadata: metadata,
+        status: :staged,
+        staged_at: now,
+        deleted_at: nil
+      })
+
+    {:ok, %{state | claim_check_blobs: Map.put(state.claim_check_blobs, blob_key, blob)}}
+  end
+
+  @spec fetch_claim_check_blob(t(), map()) :: {:ok, binary()} | :error
+  def fetch_claim_check_blob(%__MODULE__{} = state, payload_ref) do
+    state.claim_check_blobs
+    |> Map.get(claim_check_blob_key(payload_ref))
+    |> case do
+      %{encoded: encoded, status: status}
+      when is_binary(encoded) and status not in [:deleted, :swept] ->
+        {:ok, encoded}
+
+      _missing_or_deleted ->
+        :error
+    end
+  end
+
+  @spec register_claim_check_reference(t(), map(), map()) ::
+          {:ok, t()} | {{:error, :missing_staged_blob}, t()}
+  def register_claim_check_reference(%__MODULE__{} = state, payload_ref, attrs) do
+    blob_key = claim_check_blob_key(payload_ref)
+
+    case Map.fetch(state.claim_check_blobs, blob_key) do
+      {:ok, blob} ->
+        reference_key = claim_check_reference_key(attrs)
+        now = Contracts.now()
+
+        references =
+          state.claim_check_references
+          |> Map.get(blob_key, %{})
+          |> Map.put_new(reference_key, Map.put(attrs, :inserted_at, now))
+
+        referenced_blob = %{
+          blob
+          | status: :referenced,
+            referenced_at: blob.referenced_at || now,
+            deleted_at: nil
+        }
+
+        {:ok,
+         %{
+           state
+           | claim_check_blobs: Map.put(state.claim_check_blobs, blob_key, referenced_blob),
+             claim_check_references: Map.put(state.claim_check_references, blob_key, references)
+         }}
+
+      :error ->
+        {{:error, :missing_staged_blob}, state}
+    end
+  end
+
+  @spec fetch_claim_check_blob_metadata(t(), map()) :: {:ok, map()} | :error
+  def fetch_claim_check_blob_metadata(%__MODULE__{} = state, payload_ref) do
+    case Map.fetch(state.claim_check_blobs, claim_check_blob_key(payload_ref)) do
+      {:ok, blob} -> {:ok, Map.drop(blob, [:encoded])}
+      :error -> :error
+    end
+  end
+
+  @spec count_live_claim_check_references(t(), map()) :: non_neg_integer()
+  def count_live_claim_check_references(%__MODULE__{} = state, payload_ref) do
+    state.claim_check_references
+    |> Map.get(claim_check_blob_key(payload_ref), %{})
+    |> map_size()
+  end
+
+  @spec sweep_staged_claim_check_payloads(t(), DateTime.t()) ::
+          {{:ok, map()}, t(), [map()]}
+  def sweep_staged_claim_check_payloads(%__MODULE__{} = state, cutoff) do
+    {blobs, swept} =
+      Enum.reduce(state.claim_check_blobs, {%{}, []}, fn {blob_key, blob}, {acc, items} ->
+        if orphaned_staged_payload?(state, blob_key, blob, cutoff) do
+          swept_blob = %{blob | encoded: nil, status: :swept, deleted_at: Contracts.now()}
+          {Map.put(acc, blob_key, swept_blob), [blob | items]}
+        else
+          {Map.put(acc, blob_key, blob), items}
+        end
+      end)
+
+    {{:ok, %{deleted_count: length(swept)}}, %{state | claim_check_blobs: blobs}, swept}
+  end
+
+  @spec garbage_collect_claim_check_payloads(t(), DateTime.t()) ::
+          {{:ok, map()}, t(), [map()], [map()]}
+  def garbage_collect_claim_check_payloads(%__MODULE__{} = state, cutoff) do
+    {blobs, deleted, skipped} =
+      Enum.reduce(state.claim_check_blobs, {%{}, [], []}, fn {blob_key, blob},
+                                                             {acc, deleted, skipped} ->
+        live_refs = live_claim_check_reference_count(state, blob_key)
+
+        cond do
+          live_refs > 0 ->
+            {Map.put(acc, blob_key, blob), deleted,
+             [Map.put(blob, :live_refs, live_refs) | skipped]}
+
+          older_than_cutoff?(blob.staged_at, cutoff) ->
+            deleted_blob = %{blob | encoded: nil, status: :deleted, deleted_at: Contracts.now()}
+            {Map.put(acc, blob_key, deleted_blob), [blob | deleted], skipped}
+
+          true ->
+            {Map.put(acc, blob_key, blob), deleted, skipped}
+        end
+      end)
+
+    result = %{
+      deleted_count: length(deleted),
+      skipped_live_reference_count: length(skipped)
+    }
+
+    {{:ok, result}, %{state | claim_check_blobs: blobs}, deleted, skipped}
   end
 
   @spec next_seq(t(), String.t(), String.t() | nil) :: non_neg_integer()
@@ -938,7 +1236,12 @@ defmodule Jido.Integration.V2.StoreLocal.State do
     case Enum.find(entries, &same_position?(&1.event, event)) do
       nil ->
         next_entries = entries ++ [%{event: event, inserted_at: Contracts.now()}]
-        {:ok, %{state | events: Map.put(state.events, event.run_id, next_entries)}}
+        next_state = %{state | events: Map.put(state.events, event.run_id, next_entries)}
+
+        case register_event_claim_check_reference(next_state, event) do
+          {:ok, referenced_state} -> {:ok, referenced_state}
+          {{:error, reason}, _intermediate_state} -> {:error, reason}
+        end
 
       %{event: existing_event} ->
         if existing_event == event do
@@ -963,6 +1266,56 @@ defmodule Jido.Integration.V2.StoreLocal.State do
 
   defp sanitize_event(%Event{} = event) do
     %{event | payload: Redaction.redact(event.payload)}
+  end
+
+  defp register_run_claim_check_references(state, run) do
+    [
+      {:input, run.input_payload_ref},
+      {:result, run.result_payload_ref}
+    ]
+    |> Enum.reduce_while({:ok, state}, fn
+      {_field, nil}, {:ok, acc_state} ->
+        {:cont, {:ok, acc_state}}
+
+      {field, payload_ref}, {:ok, acc_state} ->
+        case register_claim_check_reference(acc_state, payload_ref, %{
+               ledger_kind: :run,
+               ledger_id: run.run_id,
+               payload_field: field,
+               run_id: run.run_id
+             }) do
+          {:ok, next_state} -> {:cont, {:ok, next_state}}
+          {{:error, _reason}, _state} = error -> {:halt, error}
+        end
+    end)
+  end
+
+  defp register_attempt_claim_check_reference(state, %Attempt{output_payload_ref: nil}) do
+    {:ok, state}
+  end
+
+  defp register_attempt_claim_check_reference(state, %Attempt{} = attempt) do
+    register_claim_check_reference(state, attempt.output_payload_ref, %{
+      ledger_kind: :attempt,
+      ledger_id: attempt.attempt_id,
+      payload_field: :output,
+      run_id: attempt.run_id,
+      attempt_id: attempt.attempt_id
+    })
+  end
+
+  defp register_event_claim_check_reference(state, %Event{payload_ref: nil}), do: {:ok, state}
+
+  defp register_event_claim_check_reference(state, %Event{} = event) do
+    register_claim_check_reference(state, event.payload_ref, %{
+      ledger_kind: :event,
+      ledger_id: event.event_id,
+      payload_field: :payload,
+      run_id: event.run_id,
+      attempt_id: event.attempt_id,
+      event_id: event.event_id,
+      trace_id: Contracts.get(event.trace, :trace_id)
+    })
   end
 
   defp install_profile_registry_entry(state, entry) do
@@ -1058,6 +1411,68 @@ defmodule Jido.Integration.V2.StoreLocal.State do
     Enum.filter(records, fn record ->
       Enum.all?(filters, fn {key, value} -> Map.get(record, key) == value end)
     end)
+  end
+
+  defp same_recovery_identity?(left, right) do
+    left.subject_ref == right.subject_ref and
+      left.run_id == right.run_id and
+      left.attempt_id == right.attempt_id and
+      left.reason == right.reason and
+      recovery_external_ref(left) == recovery_external_ref(right)
+  end
+
+  defp recovery_external_ref(task) do
+    Map.get(task.metadata, "external_operation_ref") ||
+      Map.get(task.metadata, :external_operation_ref)
+  end
+
+  defp recovery_task_matches?(task, filters) do
+    Enum.all?(filters, fn {key, expected} ->
+      Map.get(task, normalize_recovery_filter_key(key)) == expected
+    end)
+  end
+
+  defp normalize_recovery_filter_key("status"), do: :status
+  defp normalize_recovery_filter_key("attempt_id"), do: :attempt_id
+  defp normalize_recovery_filter_key("run_id"), do: :run_id
+  defp normalize_recovery_filter_key(key), do: key
+
+  defp recovery_task_due?(%{task: %{status: :pending, due_at: due_at}}, now),
+    do: DateTime.compare(due_at, now) != :gt
+
+  defp recovery_task_due?(
+         %{task: %{status: :running}, claim_expires_at: %DateTime{} = expires_at},
+         now
+       ),
+       do: DateTime.compare(expires_at, now) != :gt
+
+  defp recovery_task_due?(_entry, _now), do: false
+
+  defp claim_check_blob_key(payload_ref) do
+    {Contracts.get(payload_ref, :store), Contracts.get(payload_ref, :key)}
+  end
+
+  defp claim_check_reference_key(attrs) do
+    {
+      Contracts.get(attrs, :ledger_kind),
+      Contracts.get(attrs, :ledger_id),
+      Contracts.get(attrs, :payload_field)
+    }
+  end
+
+  defp orphaned_staged_payload?(state, blob_key, blob, cutoff) do
+    blob.status == :staged and older_than_cutoff?(blob.staged_at, cutoff) and
+      live_claim_check_reference_count(state, blob_key) == 0
+  end
+
+  defp live_claim_check_reference_count(state, blob_key) do
+    state.claim_check_references
+    |> Map.get(blob_key, %{})
+    |> map_size()
+  end
+
+  defp older_than_cutoff?(%DateTime{} = value, %DateTime{} = cutoff) do
+    DateTime.compare(value, cutoff) != :gt
   end
 
   defp lease_redemption_status(%LeaseRecord{revoked_at: %DateTime{}}, _now, _max_calls),

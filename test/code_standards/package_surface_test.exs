@@ -94,6 +94,8 @@ defmodule Jido.Integration.Workspace.PackageSurfaceTest do
     assert Ci.local_blitz_dep_path(MixProject.project()) == nil
     assert Ci.ensure_local_blitz_current!() == :current
 
+    assert hd(Ci.ci_stages()) == {:deps_get, [], [force: true]}
+
     assert Code.ensure_loaded?(Ci)
 
     assert Ci.impact_policy() == [
@@ -211,7 +213,7 @@ defmodule Jido.Integration.Workspace.PackageSurfaceTest do
 
   test "weld contract keeps the published docs surface package-facing" do
     docs =
-      load_weld_contract!().artifact()
+      apply(load_weld_contract!(), :artifact, [])
       |> Keyword.fetch!(:output)
       |> Keyword.fetch!(:docs)
 
