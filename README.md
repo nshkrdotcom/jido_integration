@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/nshkrdotcom/jido_integration">
-    <img alt="GitHub: jido_integration" src="https://img.shields.io/badge/GitHub-jido_integration-345366" />
+    <img alt="GitHub: jido_integration" src="https://img.shields.io/badge/GitHub-jido_integration-0b0f14?logo=github" />
   </a>
   <a href="./LICENSE">
     <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-458f8b" />
