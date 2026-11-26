@@ -4,10 +4,10 @@
 
 <p align="center">
   <a href="https://github.com/nshkrdotcom/jido_integration">
-    <img alt="GitHub: jido_integration" src="https://img.shields.io/badge/github-nshkrdotcom%2Fjido__integration-24292e.svg" />
+    <img alt="GitHub: jido_integration" src="https://badgen.net/badge/GitHub/jido_integration/24292e" />
   </a>
   <a href="./LICENSE">
-    <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" />
+    <img alt="License: MIT" src="https://badgen.net/badge/license/MIT/blue" />
   </a>
 </p>
 
